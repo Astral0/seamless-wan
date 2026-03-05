@@ -1,3 +1,6 @@
+# Claude Maestro (managed separately)
+.claude/
+
 # Secrets
 *.secret
 *.key
