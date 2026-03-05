@@ -258,6 +258,27 @@ chroot /mnt/data /bin/su -l claude -c 'npm install -g @anthropic-ai/claude-code 
 # Binary will be at ~/.local/bin/claude
 ```
 
+### Install OMR slash commands for Claude Code
+
+The `/omr-*` slash commands allow Claude Code on the RPi to manage OMR directly. They must be installed into the `claude` user's `.claude/commands/` directory inside the chroot:
+
+```bash
+# From the seamless-wan repo root (on your dev machine or on the RPi)
+mkdir -p /mnt/data/home/claude/.claude/commands
+cp claude/commands/omr-*.md /mnt/data/home/claude/.claude/commands/
+chown -R 1000:1000 /mnt/data/home/claude/.claude
+```
+
+Once installed, launching Claude Code on the RPi (`/opt/claude`) will make these commands available:
+- `/omr-status` — Full system status overview
+- `/omr-wifi` — WiFi configuration management
+- `/omr-roaming` — WiFi roaming (scan, connect, config)
+- `/omr-wan` — WAN interface management
+- `/omr-diagnose` — Systematic diagnostics
+- `/omr-tethering` — USB tethering status and troubleshooting
+- `/omr-reboot` — Controlled reboot with pre/post checks
+- `/omr-shadowsocks` — Shadowsocks configuration
+
 ## Phase 7 — Deploy seamless-wan Scripts
 
 ```bash
