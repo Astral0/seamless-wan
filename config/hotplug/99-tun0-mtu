@@ -1,0 +1,6 @@
+#!/bin/sh
+# seamless-wan: Set Glorytun tunnel MTU when omrvpn comes up
+[ "$INTERFACE" = "omrvpn" ] && [ "$ACTION" = "ifup" ] && {
+    ip link set tun0 mtu 1400 2>/dev/null
+    logger -t tun0-fix "Set tun0 MTU=1400"
+}

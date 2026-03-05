@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Menu">
+    <item label="Firefox">
+      <action name="Execute"><command>firefox-esr</command></action>
+    </item>
+    <item label="Firefox Captive Portal">
+      <action name="Execute"><command>/usr/local/bin/captive-firefox</command></action>
+    </item>
+    <item label="Terminal">
+      <action name="Execute"><command>xterm</command></action>
+    </item>
+    <separator />
+    <item label="Reconfigure">
+      <action name="Reconfigure" />
+    </item>
+  </menu>
+</openbox_menu>
