@@ -219,7 +219,7 @@ def scan_wifi() -> list[WifiNetwork]:
             if not ssid:
                 continue
             try:
-                dbm = int(signal_str.strip().split()[0])
+                dbm = int(float(signal_str.strip().split()[0]))
             except (ValueError, IndexError):
                 dbm = -100
             networks.append(WifiNetwork(

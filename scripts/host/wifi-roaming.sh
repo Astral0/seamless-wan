@@ -44,7 +44,10 @@ do_scan() {
         return 1
     fi
     echo "Scanning on $IFACE..."
-    iw dev "$IFACE" scan 2>/dev/null | awk '
+    # Use trigger+dump to avoid "Resource busy" when interface is connected
+    iw dev "$IFACE" scan trigger 2>/dev/null
+    sleep 3
+    iw dev "$IFACE" scan dump 2>/dev/null | awk '
         /^BSS / { bssid=$2; signal=""; ssid="" }
         /signal:/ { signal=$2 " " $3 }
         /SSID:/ { ssid=substr($0, index($0, ":")+2) }
