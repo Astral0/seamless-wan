@@ -1,0 +1,3 @@
+@echo off
+echo Connecting to RPi...
+ssh root@192.168.100.1

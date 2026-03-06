@@ -7,7 +7,7 @@ Lightweight web UI for monitoring and managing the seamless-wan router.
 - **System status**: uptime, public IP, CPU temperature, power/throttling
 - **WAN interfaces**: status of all 4 WANs (USB tethering + WiFi), restart
 - **Glorytun tunnel**: connection status, local/remote IPs
-- **WiFi roaming**: scan networks, connect/disconnect, manage known networks (CRUD)
+- **WiFi roaming**: scan networks, connect/disconnect, manage known networks (CRUD), connect to unknown networks from scan results (auto-add + rollback on failure), auto/manual connect flag per network
 - **Services**: status and restart for novnc, wifi-roaming, power-monitor
 - **Quick links**: noVNC remote desktop, OMR LuCI admin
 
@@ -144,10 +144,11 @@ All endpoints are under `/api/` and require authentication (session cookie or Ba
 | GET | `/api/roaming/status` | WiFi roaming connection status |
 | POST | `/api/roaming/scan` | Scan for WiFi networks |
 | POST | `/api/roaming/connect` | Connect to a known network |
+| POST | `/api/roaming/connect-and-add` | Connect to unknown network (add to config, rollback on failure) |
 | POST | `/api/roaming/disconnect` | Disconnect from WiFi |
-| GET | `/api/roaming/networks` | List known networks |
-| POST | `/api/roaming/networks` | Add a known network |
-| PUT | `/api/roaming/networks/{ssid}` | Update a known network |
+| GET | `/api/roaming/networks` | List known networks (includes `autoconnect` flag) |
+| POST | `/api/roaming/networks` | Add a known network (`autoconnect` param, default true) |
+| PUT | `/api/roaming/networks/{ssid}` | Update a known network (`autoconnect` param) |
 | DELETE | `/api/roaming/networks/{ssid}` | Delete a known network |
 | GET | `/api/services` | Service statuses |
 | POST | `/api/services/{name}/restart` | Restart a service |

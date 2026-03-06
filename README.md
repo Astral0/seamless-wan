@@ -9,7 +9,7 @@ A mobile multi-WAN toolkit for [OpenMPTCProuter](https://www.openmptcprouter.com
 ## Features
 
 - **Multi-WAN aggregation** — Combine USB tethering (phones), WiFi client, and USB WiFi dongles via MPTCP
-- **WiFi roaming** — Scan and manually connect to known networks on a secondary WiFi adapter
+- **WiFi roaming** — Auto-connect to best known network, roam on weak signal (-75 dBm threshold), connect to unknown networks from scan results with password modal
 - **Captive portal support** — UID-based policy routing with a dedicated browser (via noVNC) that bypasses the VPN tunnel
 - **Power & USB monitoring** — Real-time undervoltage, temperature, and USB error detection with LED alerts
 - **Web dashboard** — Lightweight web UI for system status, WiFi roaming management, and WAN monitoring
@@ -82,10 +82,14 @@ seamless-wan/
 │   │   ├── start-novnc.sh
 │   │   ├── alpine-enter.sh
 │   │   └── claude-launcher.sh
-│   └── chroot/             # Scripts for the Alpine chroot
-│       ├── start-novnc.sh
-│       ├── start-dashboard.sh
-│       └── captive-firefox.sh
+│   ├── chroot/             # Scripts for the Alpine chroot
+│   │   ├── start-novnc.sh
+│   │   ├── start-dashboard.sh
+│   │   └── captive-firefox.sh
+│   └── win/                # Windows .bat helpers (deploy, restart, logs)
+│       ├── deploy-dashboard.bat
+│       ├── restart-all.bat
+│       └── ssh-rpi.bat
 ├── config/
 │   ├── hotplug/            # OpenWrt hotplug scripts
 │   │   ├── 99-tun0-mtu
@@ -97,7 +101,7 @@ seamless-wan/
 │   │   └── power-monitor
 │   ├── openbox/            # Openbox window manager config
 │   │   └── menu.xml
-│   └── wifi-roaming.conf   # Known WiFi networks
+│   └── wifi-roaming.conf   # Known WiFi networks (SSID|key|priority|auto/manual)
 ├── dashboard/              # Web dashboard
 │   ├── server.py           # HTTP server (port 8080)
 │   ├── auth.py             # Basic Auth + sessions
