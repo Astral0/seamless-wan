@@ -3,6 +3,7 @@
 import re
 import subprocess
 import threading
+import time
 
 from models import (
     CommandResult, WANStatus, TunnelStatus, SystemStatus,
@@ -266,16 +267,24 @@ def get_known_networks() -> list[KnownNetwork]:
                 priority = int(parts[2])
             except ValueError:
                 priority = 10
+            autoconnect = True
+            if len(parts) >= 4:
+                autoconnect = parts[3].strip().lower() != "manual"
             networks.append(KnownNetwork(
                 ssid=parts[0],
                 key=parts[1],
                 priority=priority,
+                autoconnect=autoconnect,
             ))
 
     return networks
 
 
-def add_known_network(ssid: str, key: str, priority: int) -> CommandResult:
+def _auto_flag(autoconnect: bool) -> str:
+    return "auto" if autoconnect else "manual"
+
+
+def add_known_network(ssid: str, key: str, priority: int, autoconnect: bool = True) -> CommandResult:
     """Add a network to wifi-roaming.conf."""
     err = validate_ssid(ssid)
     if err:
@@ -288,6 +297,7 @@ def add_known_network(ssid: str, key: str, priority: int) -> CommandResult:
 
     safe_ssid = shell_escape(ssid)
     safe_key = shell_escape(key)
+    flag = _auto_flag(autoconnect)
 
     with _write_lock:
         # Check for duplicate
@@ -298,12 +308,12 @@ def add_known_network(ssid: str, key: str, priority: int) -> CommandResult:
 
         return run_ssh(
             f"mount -o remount,rw / 2>/dev/null; "
-            f"echo '{safe_ssid}|{safe_key}|{priority}' >> /etc/wifi-roaming.conf",
+            f"echo '{safe_ssid}|{safe_key}|{priority}|{flag}' >> /etc/wifi-roaming.conf",
             timeout=10,
         )
 
 
-def update_known_network(ssid: str, key: str, priority: int) -> CommandResult:
+def update_known_network(ssid: str, key: str, priority: int, autoconnect: bool = True) -> CommandResult:
     """Update a network in wifi-roaming.conf."""
     err = validate_ssid(ssid)
     if err:
@@ -316,11 +326,12 @@ def update_known_network(ssid: str, key: str, priority: int) -> CommandResult:
 
     safe_ssid = shell_escape(ssid)
     safe_key = shell_escape(key)
+    flag = _auto_flag(autoconnect)
 
     with _write_lock:
         return run_ssh(
             f"mount -o remount,rw / 2>/dev/null; "
-            f"sed -i 's|^{safe_ssid}|.*|{safe_ssid}|{safe_key}|{priority}|' /etc/wifi-roaming.conf",
+            f"sed -i '/^{safe_ssid}|/c\\{safe_ssid}|{safe_key}|{priority}|{flag}' /etc/wifi-roaming.conf",
             timeout=10,
         )
 
@@ -339,6 +350,29 @@ def delete_known_network(ssid: str) -> CommandResult:
             f"sed -i '/^{safe_ssid}|/d' /etc/wifi-roaming.conf",
             timeout=10,
         )
+
+
+def connect_and_add_network(ssid: str, key: str, priority: int, autoconnect: bool = True) -> CommandResult:
+    """Add a network to config, connect to it, and rollback on failure."""
+    add_result = add_known_network(ssid, key, priority, autoconnect)
+    if not add_result.ok:
+        return add_result
+
+    connect_result = connect_wifi(ssid)
+
+    # Wait and verify connection
+    time.sleep(7)
+    r = run_ssh(
+        "/opt/wifi-roaming.sh status 2>/dev/null | grep -q 'Connected to'",
+        timeout=10,
+    )
+    if r.ok:
+        return CommandResult(stdout=f"Connected to {ssid} and added to known networks")
+
+    # Connection failed — rollback: delete from config
+    delete_known_network(ssid)
+    stderr = connect_result.stderr or "Connection failed"
+    return CommandResult(stderr=f"Connection to {ssid} failed, removed from config. {stderr}", returncode=1)
 
 
 # --- WAN & Service commands ---

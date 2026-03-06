@@ -2,6 +2,7 @@
 
 let pollTimer = null;
 let editingSsid = null; // null = adding, string = editing
+let connectAndAdd = false; // true when connecting from scan results
 
 // --- API Client ---
 
@@ -181,7 +182,7 @@ async function doScan() {
             const knownBadge = n.known ? ' <span style="font-size:11px;color:var(--text-muted)">(known)</span>' : "";
             const connectBtn = n.known
                 ? `<button class="btn btn-primary btn-sm" onclick="doConnect('${escHtml(n.ssid)}')">Connect</button>`
-                : "";
+                : `<button class="btn btn-primary btn-sm" onclick="showConnectAddModal('${escHtml(n.ssid)}')">Connect</button>`;
             return `<li class="network-item">
                 <div class="network-info">
                     ${bars}
@@ -244,19 +245,23 @@ async function loadKnownNetworks() {
         return;
     }
 
-    list.innerHTML = resp.data.map(n => `
-        <li class="known-item">
+    list.innerHTML = resp.data.map(n => {
+        const acBadge = n.autoconnect
+            ? '<span class="badge badge-up" style="font-size:10px;padding:1px 6px">auto</span>'
+            : '<span class="badge badge-down" style="font-size:10px;padding:1px 6px">manual</span>';
+        return `<li class="known-item">
             <div>
                 <span class="known-prio">${n.priority}</span>
                 <strong>${escHtml(n.ssid)}</strong>
                 <span class="known-key">${n.key_display}</span>
+                ${acBadge}
             </div>
             <div class="btn-group">
-                <button class="btn btn-outline btn-sm" onclick="showEditModal('${escHtml(n.ssid)}', '${escHtml(n.key)}', ${n.priority})">Edit</button>
+                <button class="btn btn-outline btn-sm" onclick="showEditModal('${escHtml(n.ssid)}', '${escHtml(n.key)}', ${n.priority}, ${n.autoconnect})">Edit</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteNetwork('${escHtml(n.ssid)}')">Del</button>
             </div>
-        </li>
-    `).join("");
+        </li>`;
+    }).join("");
 
     // Also load roaming status
     loadRoamingStatus();
@@ -264,21 +269,37 @@ async function loadKnownNetworks() {
 
 function showAddModal() {
     editingSsid = null;
+    connectAndAdd = false;
     document.getElementById("modal-title").textContent = "Add Known Network";
     document.getElementById("modal-ssid").value = "";
     document.getElementById("modal-ssid").disabled = false;
     document.getElementById("modal-key").value = "";
     document.getElementById("modal-priority").value = "10";
+    document.getElementById("modal-autoconnect").checked = true;
     document.getElementById("modal-network").classList.add("active");
 }
 
-function showEditModal(ssid, key, priority) {
+function showConnectAddModal(ssid) {
+    editingSsid = null;
+    connectAndAdd = true;
+    document.getElementById("modal-title").textContent = "Connect to " + ssid;
+    document.getElementById("modal-ssid").value = ssid;
+    document.getElementById("modal-ssid").disabled = true;
+    document.getElementById("modal-key").value = "";
+    document.getElementById("modal-priority").value = "10";
+    document.getElementById("modal-autoconnect").checked = true;
+    document.getElementById("modal-network").classList.add("active");
+}
+
+function showEditModal(ssid, key, priority, autoconnect) {
     editingSsid = ssid;
+    connectAndAdd = false;
     document.getElementById("modal-title").textContent = "Edit Network";
     document.getElementById("modal-ssid").value = ssid;
     document.getElementById("modal-ssid").disabled = true;
     document.getElementById("modal-key").value = key === "open" ? "open" : key;
     document.getElementById("modal-priority").value = priority;
+    document.getElementById("modal-autoconnect").checked = autoconnect !== false;
     document.getElementById("modal-network").classList.add("active");
 }
 
@@ -290,22 +311,35 @@ async function saveNetwork() {
     const ssid = document.getElementById("modal-ssid").value.trim();
     const key = document.getElementById("modal-key").value.trim() || "open";
     const priority = parseInt(document.getElementById("modal-priority").value) || 10;
+    const autoconnect = document.getElementById("modal-autoconnect").checked;
 
     if (!ssid) { alert("SSID is required"); return; }
     if (ssid.includes("|")) { alert("SSID cannot contain pipe (|)"); return; }
 
     let resp;
     if (editingSsid) {
-        resp = await api("PUT", "/api/roaming/networks/" + encodeURIComponent(editingSsid), { key, priority });
+        resp = await api("PUT", "/api/roaming/networks/" + encodeURIComponent(editingSsid), { key, priority, autoconnect });
+    } else if (connectAndAdd) {
+        // Connect+Add from scan: show spinner, longer timeout
+        const saveBtn = document.querySelector("#modal-network .btn-primary");
+        const origText = saveBtn.textContent;
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="spinner"></span>Connecting...';
+        resp = await api("POST", "/api/roaming/connect-and-add", { ssid, key, priority, autoconnect });
+        saveBtn.disabled = false;
+        saveBtn.textContent = origText;
     } else {
-        resp = await api("POST", "/api/roaming/networks", { ssid, key, priority });
+        resp = await api("POST", "/api/roaming/networks", { ssid, key, priority, autoconnect });
     }
 
     if (resp && resp.ok) {
         closeModal();
         loadKnownNetworks();
+        if (connectAndAdd) {
+            setTimeout(loadRoamingStatus, 2000);
+        }
     } else {
-        alert("Save failed: " + ((resp && resp.error) || "Unknown"));
+        alert("Failed: " + ((resp && resp.error) || "Unknown"));
     }
 }
 

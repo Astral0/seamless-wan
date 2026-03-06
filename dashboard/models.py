@@ -65,6 +65,7 @@ class KnownNetwork:
     ssid: str = ""
     key: str = ""
     priority: int = 10
+    autoconnect: bool = True
 
     def to_dict(self) -> dict:
         d = asdict(self)

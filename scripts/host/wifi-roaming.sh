@@ -1,6 +1,6 @@
 #!/bin/sh
 # seamless-wan: WiFi roaming daemon for secondary WiFi adapter (MT7601U)
-# Scans for known networks, logs results. Connection is MANUAL only.
+# Scans for known networks, auto-connects to best known, roams on weak signal.
 # Usage: wifi-roaming.sh {status|scan|connect SSID|disconnect|daemon}
 
 CONF="/etc/wifi-roaming.conf"
@@ -30,10 +30,19 @@ get_wan_iface() {
     get_phy_iface
 }
 
-# Load known networks from config
+# Load known networks from config (all)
 load_networks() {
     [ -f "$CONF" ] || return 1
     grep -v '^#' "$CONF" | grep -v '^$'
+}
+
+# Load only auto-connect networks (4th field != "manual")
+load_auto_networks() {
+    load_networks | while IFS='|' read -r ssid key prio flag; do
+        flag=$(echo "$flag" | tr -d ' ')
+        [ "$flag" = "manual" ] && continue
+        echo "$ssid|$key|$prio|$flag"
+    done
 }
 
 # Scan for available WiFi networks
@@ -76,8 +85,10 @@ do_status() {
     fi
     echo ""
     echo "Known networks:"
-    load_networks | while IFS='|' read -r ssid key prio; do
-        echo "  [$prio] $ssid"
+    load_networks | while IFS='|' read -r ssid key prio flag; do
+        flag=$(echo "$flag" | tr -d ' ')
+        [ -z "$flag" ] && flag="auto"
+        echo "  [$prio] $ssid ($flag)"
     done
 }
 
@@ -138,23 +149,92 @@ do_disconnect() {
     logger -t "$LOG_TAG" "Disconnected"
 }
 
-# Daemon mode: scan periodically and log known networks found
+# Get current signal strength in dBm (integer)
+get_signal_dbm() {
+    IFACE="$1"
+    iw dev "$IFACE" link 2>/dev/null | awk '/signal:/ {print int($2)}'
+}
+
+# Daemon mode: auto-connect to best known network + roaming on signal threshold
 do_daemon() {
-    logger -t "$LOG_TAG" "Daemon started (scan every ${SCAN_INTERVAL}s, NO auto-connect)"
+    ROAM_THRESHOLD=-75
+    ROAM_HYSTERESIS=10
+
+    logger -t "$LOG_TAG" "Daemon started (scan every ${SCAN_INTERVAL}s, auto-connect enabled, roam threshold=${ROAM_THRESHOLD}dBm)"
     while true; do
         IFACE=$(get_wan_iface)
         if [ -n "$IFACE" ]; then
-            # Only scan if not currently connected
             LINK=$(iw dev "$IFACE" link 2>/dev/null)
-            if ! echo "$LINK" | grep -q "Connected"; then
-                SCAN_RESULT=$(iw dev "$IFACE" scan 2>/dev/null)
-                if [ -n "$SCAN_RESULT" ]; then
-                    load_networks | while IFS='|' read -r ssid key prio; do
-                        if echo "$SCAN_RESULT" | grep -q "SSID: $ssid"; then
-                            SIGNAL=$(echo "$SCAN_RESULT" | grep -B5 "SSID: $ssid" | grep "signal:" | awk '{print $2}' | head -1)
-                            logger -t "$LOG_TAG" "Known network available: $ssid (${SIGNAL}dBm, priority=$prio)"
+
+            if echo "$LINK" | grep -q "Connected"; then
+                # Connected: check signal for roaming
+                CUR_SIGNAL=$(get_signal_dbm "$IFACE")
+                CUR_SSID=$(echo "$LINK" | grep 'SSID:' | awk '{print $2}')
+
+                if [ -n "$CUR_SIGNAL" ] && [ "$CUR_SIGNAL" -lt "$ROAM_THRESHOLD" ] 2>/dev/null; then
+                    logger -t "$LOG_TAG" "Signal weak: $CUR_SSID at ${CUR_SIGNAL}dBm (threshold: ${ROAM_THRESHOLD}dBm), scanning for better network"
+
+                    iw dev "$IFACE" scan trigger 2>/dev/null
+                    sleep 3
+                    SCAN_RESULT=$(iw dev "$IFACE" scan dump 2>/dev/null)
+
+                    if [ -n "$SCAN_RESULT" ]; then
+                        # Find best auto-connect network with better signal
+                        BEST_SSID=""
+                        BEST_PRIO=999
+                        BEST_SIG=-999
+
+                        while IFS='|' read -r ssid key prio flag; do
+                            if echo "$SCAN_RESULT" | grep -q "SSID: $ssid"; then
+                                SIG=$(echo "$SCAN_RESULT" | grep -B5 "SSID: $ssid" | grep "signal:" | awk '{print int($2)}' | head -1)
+                                # Only consider if signal is at least HYSTERESIS dBm better
+                                THRESHOLD=$((CUR_SIGNAL + ROAM_HYSTERESIS))
+                                if [ -n "$SIG" ] && [ "$SIG" -gt "$THRESHOLD" ] 2>/dev/null; then
+                                    if [ "$prio" -lt "$BEST_PRIO" ] 2>/dev/null; then
+                                        BEST_PRIO=$prio
+                                        BEST_SSID=$ssid
+                                        BEST_SIG=$SIG
+                                    fi
+                                fi
+                            fi
+                        done <<ROAM_EOF
+$(load_auto_networks)
+ROAM_EOF
+
+                        if [ -n "$BEST_SSID" ] && [ "$BEST_SSID" != "$CUR_SSID" ]; then
+                            logger -t "$LOG_TAG" "Roaming: switching from $CUR_SSID (${CUR_SIGNAL}dBm) to $BEST_SSID (${BEST_SIG}dBm)"
+                            do_connect "$BEST_SSID"
                         fi
-                    done
+                    fi
+                fi
+            else
+                # Not connected: auto-connect to best known network
+                iw dev "$IFACE" scan trigger 2>/dev/null
+                sleep 3
+                SCAN_RESULT=$(iw dev "$IFACE" scan dump 2>/dev/null)
+
+                if [ -n "$SCAN_RESULT" ]; then
+                    BEST_SSID=""
+                    BEST_PRIO=999
+
+                    # Find best auto-connect network by priority
+                    while IFS='|' read -r ssid key prio flag; do
+                        if echo "$SCAN_RESULT" | grep -q "SSID: $ssid"; then
+                            if [ "$prio" -lt "$BEST_PRIO" ] 2>/dev/null; then
+                                BEST_PRIO=$prio
+                                BEST_SSID=$ssid
+                            fi
+                        fi
+                    done <<EOF
+$(load_auto_networks)
+EOF
+
+                    if [ -n "$BEST_SSID" ]; then
+                        logger -t "$LOG_TAG" "Auto-connecting to $BEST_SSID (priority=$BEST_PRIO)"
+                        do_connect "$BEST_SSID"
+                    else
+                        logger -t "$LOG_TAG" "No auto-connect networks found in scan"
+                    fi
                 fi
             fi
         fi
@@ -175,6 +255,6 @@ case "$1" in
         echo "  scan        Scan for available WiFi networks"
         echo "  connect     Connect to a known SSID"
         echo "  disconnect  Disconnect from current network"
-        echo "  daemon      Run as background daemon (scan + log only, NO auto-connect)"
+        echo "  daemon      Run as background daemon (auto-connect + roaming)"
         ;;
 esac

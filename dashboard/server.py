@@ -249,16 +249,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ssid = body.get("ssid", "")
             key = body.get("key", "open")
             priority = body.get("priority", 10)
+            autoconnect = body.get("autoconnect", True)
             try:
                 priority = int(priority)
             except (ValueError, TypeError):
                 self.send_json(api_error("Priority must be a number", 400), 400)
                 return
-            result = host_commands.add_known_network(ssid, key, priority)
+            result = host_commands.add_known_network(ssid, key, priority, bool(autoconnect))
             if result.ok:
                 self.send_json(api_success({"message": f"Added {ssid}"}), 201)
             else:
                 self.send_json(api_error(result.stderr or "Add failed"), 400)
+            return
+
+        # POST /api/roaming/connect-and-add
+        if path == "/api/roaming/connect-and-add":
+            ssid = body.get("ssid", "")
+            key = body.get("key", "open")
+            priority = body.get("priority", 10)
+            autoconnect = body.get("autoconnect", True)
+            try:
+                priority = int(priority)
+            except (ValueError, TypeError):
+                self.send_json(api_error("Priority must be a number", 400), 400)
+                return
+            result = host_commands.connect_and_add_network(ssid, key, priority, bool(autoconnect))
+            if result.ok:
+                self.send_json(api_success({"message": result.stdout}))
+            else:
+                self.send_json(api_error(result.stderr or "Connect+Add failed"), 500)
             return
 
         # POST /api/services/<name>/restart
@@ -291,12 +310,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ssid = unquote(segments[3])
             key = body.get("key", "open")
             priority = body.get("priority", 10)
+            autoconnect = body.get("autoconnect", True)
             try:
                 priority = int(priority)
             except (ValueError, TypeError):
                 self.send_json(api_error("Priority must be a number", 400), 400)
                 return
-            result = host_commands.update_known_network(ssid, key, priority)
+            result = host_commands.update_known_network(ssid, key, priority, bool(autoconnect))
             if result.ok:
                 self.send_json(api_success({"message": f"Updated {ssid}"}))
             else:
