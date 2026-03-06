@@ -84,6 +84,7 @@ seamless-wan/
 │   │   └── claude-launcher.sh
 │   └── chroot/             # Scripts for the Alpine chroot
 │       ├── start-novnc.sh
+│       ├── start-dashboard.sh
 │       └── captive-firefox.sh
 ├── config/
 │   ├── hotplug/            # OpenWrt hotplug scripts
@@ -91,15 +92,18 @@ seamless-wan/
 │   │   └── 99-captive-routing
 │   ├── init.d/             # procd service definitions
 │   │   ├── novnc
+│   │   ├── dashboard
 │   │   ├── wifi-roaming
 │   │   └── power-monitor
 │   ├── openbox/            # Openbox window manager config
 │   │   └── menu.xml
 │   └── wifi-roaming.conf   # Known WiFi networks
-├── dashboard/              # Web dashboard (TODO)
-│   ├── server.py
-│   ├── static/
-│   └── templates/
+├── dashboard/              # Web dashboard
+│   ├── server.py           # HTTP server (port 8080)
+│   ├── auth.py             # Basic Auth + sessions
+│   ├── host_commands.py    # SSH command wrapper
+│   ├── models.py           # API response dataclasses
+│   └── static/             # HTML/CSS/JS frontend
 └── claude/                 # Claude Code integration
     ├── CLAUDE.md           # Instructions for embedded Claude
     └── skills/             # Slash command skills (/omr-*)

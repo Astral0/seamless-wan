@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>seamless-wan</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="login-screen">
+    <div class="card login-card">
+        <h2>seamless-wan</h2>
+        <p style="color:var(--text-muted);margin:8px 0 16px">Dashboard login</p>
+        <div class="form-group">
+            <input type="text" id="login-user" placeholder="Username" autocomplete="username">
+        </div>
+        <div class="form-group">
+            <input type="password" id="login-pass" placeholder="Password" autocomplete="current-password">
+        </div>
+        <button class="btn btn-primary" style="width:100%" onclick="doLogin()">Login</button>
+        <div id="login-error" class="login-error"></div>
+    </div>
+</div>
+
+<!-- Dashboard (hidden until logged in) -->
+<div id="dashboard" style="display:none">
+
+    <div class="header">
+        <h1>seamless-wan</h1>
+        <div class="header-right">
+            <div class="refresh-dot" id="refresh-dot" title="Auto-refresh active"></div>
+            <button class="btn btn-sm btn-outline" style="color:white;border-color:rgba(255,255,255,0.3)" onclick="doLogout()">Logout</button>
+        </div>
+    </div>
+
+    <div class="container">
+
+        <!-- System Status -->
+        <div class="card">
+            <h2>System Status</h2>
+            <div class="status-row">
+                <div class="status-item">
+                    <span class="status-label">Uptime</span>
+                    <span class="status-value" id="sys-uptime">--</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Public IP</span>
+                    <span class="status-value" id="sys-ip">--</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">CPU Temp</span>
+                    <span class="status-value" id="sys-temp">--</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Power</span>
+                    <span id="sys-power"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- WAN Interfaces -->
+        <div class="card">
+            <h2>WAN Interfaces</h2>
+            <div class="wan-grid" id="wan-grid">
+                <div class="wan-card down"><span class="wan-name">Loading...</span></div>
+            </div>
+        </div>
+
+        <!-- Tunnel -->
+        <div class="card">
+            <h2>Tunnel</h2>
+            <div class="status-row" id="tunnel-status">
+                <div class="status-item">
+                    <span class="status-label">Glorytun</span>
+                    <span class="status-value">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- WiFi Roaming -->
+        <div class="card">
+            <h2>WiFi Roaming (wan4 - MT7601U)</h2>
+            <div id="roaming-status" style="margin-bottom:12px">
+                <span class="status-label">Status:</span> <span id="roaming-info">--</span>
+            </div>
+            <div class="btn-group" style="margin-bottom:12px">
+                <button class="btn btn-primary btn-sm" id="btn-scan" onclick="doScan()">Scan</button>
+                <button class="btn btn-danger btn-sm" id="btn-disconnect" onclick="doDisconnect()">Disconnect</button>
+            </div>
+
+            <div id="scan-results" style="display:none">
+                <h3 style="font-size:13px;color:var(--text-muted);margin:8px 0">Available Networks</h3>
+                <ul class="network-list" id="scan-list"></ul>
+            </div>
+
+            <h3 style="font-size:13px;color:var(--text-muted);margin:12px 0 4px">Known Networks</h3>
+            <ul class="network-list" id="known-list"></ul>
+            <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="showAddModal()">+ Add Network</button>
+        </div>
+
+        <!-- Quick Links -->
+        <div class="card">
+            <h2>Quick Links</h2>
+            <div class="links-row">
+                <a class="link-btn" href="//:6080/vnc.html" target="_blank" id="link-novnc">noVNC</a>
+                <a class="link-btn" href="//:443" target="_blank" id="link-luci">OMR LuCI</a>
+            </div>
+        </div>
+
+        <!-- Services -->
+        <div class="card">
+            <h2>Services</h2>
+            <div id="services-list" class="services-grid"></div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Add/Edit Network Modal -->
+<div class="modal-overlay" id="modal-network">
+    <div class="modal">
+        <h3 id="modal-title">Add Known Network</h3>
+        <div class="form-group">
+            <label>SSID</label>
+            <input type="text" id="modal-ssid" maxlength="32">
+        </div>
+        <div class="form-group">
+            <label>Password (leave empty or "open" for open networks)</label>
+            <input type="text" id="modal-key" placeholder="open">
+        </div>
+        <div class="form-group">
+            <label>Priority (1-100, lower = better)</label>
+            <input type="number" id="modal-priority" min="1" max="100" value="10">
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveNetwork()">Save</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>
