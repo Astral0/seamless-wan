@@ -4,11 +4,9 @@ START=99
 STOP=10
 USE_PROCD=1
 
-CHROOT=/mnt/sda3
-
 start_service() {
     procd_open_instance
-    procd_set_param command chroot "$CHROOT" /opt/start-dashboard.sh
+    procd_set_param command /opt/start-dashboard.sh
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1

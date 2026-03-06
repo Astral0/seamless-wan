@@ -30,20 +30,54 @@ dashboard/
 The dashboard runs **inside the Alpine chroot** and communicates with the
 OpenMPTCProuter host via SSH (`ssh root@127.0.0.1`).
 
-## Installation
+## Deployment
 
-### 1. Copy files into the chroot
+### Quick deploy (from the seamless-wan repo on the RPi)
+
+```sh
+# Variables
+CHROOT=/mnt/data
+REPO_DIR=/root/seamless-wan   # adjust to where the repo is cloned
+
+# Ensure the chroot filesystem is writable
+mount -o remount,rw /
+mount -o remount,rw $CHROOT 2>/dev/null
+
+# 1. Create dashboard directory in chroot and copy files
+mkdir -p $CHROOT/opt/dashboard/static
+cp $REPO_DIR/dashboard/server.py $CHROOT/opt/dashboard/
+cp $REPO_DIR/dashboard/auth.py $CHROOT/opt/dashboard/
+cp $REPO_DIR/dashboard/host_commands.py $CHROOT/opt/dashboard/
+cp $REPO_DIR/dashboard/models.py $CHROOT/opt/dashboard/
+cp $REPO_DIR/dashboard/static/* $CHROOT/opt/dashboard/static/
+
+# 2. Install the chroot launcher
+cp $REPO_DIR/scripts/chroot/start-dashboard.sh $CHROOT/opt/start-dashboard.sh
+chmod +x $CHROOT/opt/start-dashboard.sh
+
+# 3. Install the procd service on the host
+cp $REPO_DIR/config/init.d/dashboard /etc/init.d/dashboard
+chmod +x /etc/init.d/dashboard
+service dashboard enable
+service dashboard start
+```
+
+### Manual install (step by step)
+
+#### 1. Copy files into the chroot
 
 ```sh
 # From the host (OMR)
-CHROOT=/mnt/sda3
+CHROOT=/mnt/data
 
-cp -r dashboard/* $CHROOT/opt/dashboard/
+mkdir -p $CHROOT/opt/dashboard/static
+cp -r dashboard/*.py $CHROOT/opt/dashboard/
+cp -r dashboard/static/* $CHROOT/opt/dashboard/static/
 cp scripts/chroot/start-dashboard.sh $CHROOT/opt/start-dashboard.sh
 chmod +x $CHROOT/opt/start-dashboard.sh
 ```
 
-### 2. Install the procd service
+#### 2. Install the procd service
 
 ```sh
 cp config/init.d/dashboard /etc/init.d/dashboard
@@ -52,19 +86,22 @@ service dashboard enable
 service dashboard start
 ```
 
-### 3. Set credentials (optional)
+#### 3. Set credentials (optional)
 
-Default credentials are `admin` / `seamless`. Override with environment variables:
+Default credentials are `admin` / `seamless`. Override with environment variables
+in `/mnt/sda3/opt/start-dashboard.sh`:
 
 ```sh
-# In /opt/start-dashboard.sh or the init script:
+#!/bin/sh
 export DASHBOARD_USER="myuser"
 export DASHBOARD_PASS="mypassword"
+cd /opt/dashboard || exit 1
+exec python3 server.py
 ```
 
-### 4. Firewall
+#### 4. Firewall (if needed)
 
-Allow port 8080 on the LAN zone if needed:
+Allow port 8080 on the LAN zone:
 
 ```sh
 uci add firewall rule
@@ -75,6 +112,18 @@ uci set firewall.@rule[-1].proto='tcp'
 uci set firewall.@rule[-1].target='ACCEPT'
 uci commit firewall
 fw4 reload
+```
+
+### Update (after git pull)
+
+```sh
+CHROOT=/mnt/data
+REPO_DIR=/root/seamless-wan
+
+mount -o remount,rw /
+cp $REPO_DIR/dashboard/*.py $CHROOT/opt/dashboard/
+cp $REPO_DIR/dashboard/static/* $CHROOT/opt/dashboard/static/
+service dashboard restart
 ```
 
 ## Usage
