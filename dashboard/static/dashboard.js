@@ -3,6 +3,8 @@
 let pollTimer = null;
 let editingSsid = null; // null = adding, string = editing
 let connectAndAdd = false; // true when connecting from scan results
+let wanPublicIps = {}; // cached public IPs per WAN
+let lastWanIps = {}; // track internal IPs to detect changes
 
 // --- API Client ---
 
@@ -105,8 +107,21 @@ async function pollStatus() {
         powerEl.innerHTML = '<span class="badge badge-warn">' + d.system.throttled + '</span>';
     }
 
-    // WANs
+    // WANs — detect IP changes to refresh public IPs
+    const curWanIps = {};
+    d.wans.forEach(w => { if (w.ip) curWanIps[w.name] = w.ip; });
+    let ipChanged = false;
+    for (const [name, ip] of Object.entries(curWanIps)) {
+        if (lastWanIps[name] !== ip) { ipChanged = true; break; }
+    }
+    for (const name of Object.keys(lastWanIps)) {
+        if (!curWanIps[name]) { ipChanged = true; delete wanPublicIps[name]; break; }
+    }
+    lastWanIps = curWanIps;
+
     renderWans(d.wans);
+
+    if (ipChanged) loadWanPublicIps();
 
     // Tunnel
     renderTunnel(d.tunnel);
@@ -114,18 +129,35 @@ async function pollStatus() {
     dot.style.background = "#22c55e";
 }
 
+async function loadWanPublicIps() {
+    const resp = await api("GET", "/api/wan/public-ips");
+    if (resp && resp.ok) {
+        wanPublicIps = resp.data;
+        // Update any already-rendered WAN cards
+        for (const [name, pip] of Object.entries(wanPublicIps)) {
+            const el = document.getElementById("wan-pip-" + name);
+            if (el) el.textContent = pip;
+        }
+    }
+}
+
 function renderWans(wans) {
     const grid = document.getElementById("wan-grid");
+    const labels = { usb_tethering: "USB", wifi: "WiFi", wifi_roaming: "Roaming" };
     grid.innerHTML = wans.map(w => {
         const cls = w.up ? "up" : "down";
         const badge = w.up
             ? '<span class="badge badge-up">UP</span>'
             : '<span class="badge badge-down">DOWN</span>';
-        const labels = { usb_tethering: "USB", wifi: "WiFi", wifi_roaming: "Roaming" };
+        const pip = wanPublicIps[w.name] || "";
+        const pipHtml = w.up
+            ? `<div class="wan-pip" style="font-size:11px;color:var(--text-muted)">ext: <span id="wan-pip-${w.name}">${pip || "..."}</span></div>`
+            : "";
         return `<div class="wan-card ${cls}">
             <div class="wan-name">${w.name}</div>
             <div class="wan-iface">${w.interface || "?"} &middot; ${labels[w.device_type] || w.device_type}</div>
             <div class="wan-ip">${w.ip || "&mdash;"}</div>
+            ${pipHtml}
             ${badge}
             <div style="margin-top:8px">
                 <button class="btn btn-outline btn-sm" onclick="restartWan('${w.name}')">Restart</button>

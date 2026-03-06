@@ -148,6 +148,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(api_success([w.to_dict() for w in wans]))
             return
 
+        # GET /api/wan/public-ips — slow, call once
+        if path == "/api/wan/public-ips":
+            ips = host_commands.get_wan_public_ips()
+            self.send_json(api_success(ips))
+            return
+
         # GET /api/roaming/status
         if path == "/api/roaming/status":
             status = host_commands.get_roaming_status()

@@ -158,6 +158,26 @@ def get_wan_status() -> list[WANStatus]:
     return wans
 
 
+def get_wan_public_ips() -> dict[str, str]:
+    """Get public IP for each WAN from OMR config (instant, no curl)."""
+    r = run_ssh(
+        r"""
+        for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1 | grep '^wan'); do
+            pip=$(uci get openmptcprouter.$iface.publicip 2>/dev/null)
+            [ -n "$pip" ] && echo "$iface|$pip"
+        done
+        """,
+        timeout=5,
+    )
+    result = {}
+    if r.ok:
+        for line in r.stdout.splitlines():
+            parts = line.strip().split("|", 1)
+            if len(parts) == 2 and parts[1]:
+                result[parts[0]] = parts[1]
+    return result
+
+
 def get_tunnel_status() -> TunnelStatus:
     """Get Glorytun tunnel status."""
     tunnel = TunnelStatus()
