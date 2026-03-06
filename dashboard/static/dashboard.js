@@ -417,9 +417,9 @@ function updateQuickLinks() {
 
 // --- Init ---
 
-// Try to access API to check if session is valid
+// Try to access API to check if session is valid (lightweight, no SSH)
 (async function init() {
-    const resp = await api("GET", "/api/services");
+    const resp = await api("GET", "/api/ping");
     if (resp && resp.ok) {
         showDashboard();
     } else {

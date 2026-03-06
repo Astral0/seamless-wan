@@ -125,6 +125,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self.require_auth():
             return
 
+        # GET /api/ping — lightweight session check (no SSH)
+        if path == "/api/ping":
+            self.send_json(api_success({"pong": True}))
+            return
+
         # GET /api/status
         if path == "/api/status":
             sys_status = host_commands.get_system_status()

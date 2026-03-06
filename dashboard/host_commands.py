@@ -77,23 +77,28 @@ def get_system_status() -> SystemStatus:
     """Get system status (uptime, temp, throttling, public IP)."""
     status = SystemStatus()
 
-    r = run_ssh("uptime | sed 's/.*up //' | sed 's/,.*load.*//'", timeout=10)
+    # Single SSH call for local system info (fast)
+    r = run_ssh(
+        "echo \"UP=$(uptime | sed 's/.*up //' | sed 's/,.*load.*//')\";"
+        "echo \"TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)\";"
+        "echo \"THROT=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)\"",
+        timeout=10,
+    )
     if r.ok:
-        status.uptime = r.stdout.strip()
+        for line in r.stdout.splitlines():
+            if line.startswith("UP="):
+                status.uptime = line[3:].strip()
+            elif line.startswith("TEMP="):
+                try:
+                    status.temp_celsius = int(line[5:].strip()) // 1000
+                except ValueError:
+                    pass
+            elif line.startswith("THROT="):
+                status.throttled = line[6:].strip() or "0x0"
+                status.throttled_ok = status.throttled == "0x0"
 
-    r = run_ssh("cat /sys/class/thermal/thermal_zone0/temp", timeout=5)
-    if r.ok:
-        try:
-            status.temp_celsius = int(r.stdout.strip()) // 1000
-        except ValueError:
-            pass
-
-    r = run_ssh("vcgencmd get_throttled 2>/dev/null | cut -d= -f2", timeout=5)
-    if r.ok:
-        status.throttled = r.stdout.strip() or "0x0"
-        status.throttled_ok = status.throttled == "0x0"
-
-    r = run_ssh("curl -s --max-time 5 ifconfig.me 2>/dev/null", timeout=10)
+    # Public IP in separate call (can be slow, non-critical)
+    r = run_ssh("curl -s --max-time 4 ifconfig.me 2>/dev/null", timeout=8)
     if r.ok and r.stdout:
         status.public_ip = r.stdout.strip()
 
@@ -101,41 +106,54 @@ def get_system_status() -> SystemStatus:
 
 
 def get_wan_status() -> list[WANStatus]:
-    """Get status of all 4 WAN interfaces."""
+    """Get status of all WAN interfaces dynamically from UCI."""
+    # Single SSH call: discover WANs, get device/type, check IP & link status
+    r = run_ssh(
+        r"""
+        for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1 | grep '^wan'); do
+            dev=$(uci get network.$iface.device 2>/dev/null)
+            # Detect device type from device name
+            case "$dev" in
+                usb*) dtype="usb_tethering" ;;
+                phy*-sta*) dtype="wifi" ;;
+                "") dtype="unknown" ;;
+                *) dtype="other" ;;
+            esac
+            # For wifi_roaming (wan with no device but linked to radio1 STA)
+            if [ -z "$dev" ]; then
+                # Try dynamic detection via wifi-roaming script
+                dev=$(/opt/wifi-roaming.sh status 2>/dev/null | head -1 | awk '{print $2}')
+                [ -n "$dev" ] && dtype="wifi_roaming"
+            fi
+            # Get IP
+            ip=""
+            up="no"
+            if [ -n "$dev" ]; then
+                ip=$(ip addr show dev "$dev" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+                if [ -n "$ip" ]; then
+                    up="yes"
+                elif ip link show "$dev" 2>/dev/null | grep -q UP; then
+                    up="yes"
+                fi
+            fi
+            echo "$iface|$dev|$dtype|$ip|$up"
+        done
+        """,
+        timeout=15,
+    )
+
     wans = []
-    wan_configs = [
-        ("wan1", "usb0", "usb_tethering"),
-        ("wan2", "", "wifi"),
-        ("wan3", "usb1", "usb_tethering"),
-        ("wan4", "", "wifi_roaming"),
-    ]
-
-    for name, default_iface, dev_type in wan_configs:
-        wan = WANStatus(name=name, device_type=dev_type)
-
-        # Get interface name from UCI if not hardcoded
-        if not default_iface:
-            r = run_ssh(f"uci get network.{name}.device 2>/dev/null", timeout=5)
-            wan.interface = r.stdout.strip() if r.ok else ""
-        else:
-            wan.interface = default_iface
-
-        if wan.interface:
-            # Check if interface is up and get IP
-            r = run_ssh(
-                f"ip addr show dev {wan.interface} 2>/dev/null"
-                " | grep 'inet ' | awk '{print $2}' | cut -d/ -f1",
-                timeout=5,
-            )
-            if r.ok and r.stdout:
-                wan.ip = r.stdout.strip()
-                wan.up = True
-            else:
-                # Check if interface exists at all
-                r2 = run_ssh(f"ip link show {wan.interface} 2>/dev/null | grep -q UP", timeout=5)
-                wan.up = r2.ok
-
-        wans.append(wan)
+    if r.ok:
+        for line in r.stdout.splitlines():
+            parts = line.strip().split("|")
+            if len(parts) >= 5:
+                wans.append(WANStatus(
+                    name=parts[0],
+                    interface=parts[1],
+                    device_type=parts[2],
+                    ip=parts[3],
+                    up=parts[4] == "yes",
+                ))
 
     return wans
 
