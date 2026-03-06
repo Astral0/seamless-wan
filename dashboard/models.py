@@ -21,7 +21,9 @@ class WANStatus:
     interface: str = ""   # usb0, phy1-sta0, etc.
     device_type: str = "" # usb_tethering, wifi, wifi_roaming
     ip: str = ""
-    up: bool = False
+    up: bool = False      # OMR tracker state (real connectivity to VPS)
+    link: bool = False    # interface has IP or link is up (local)
+    ssid: str = ""        # connected SSID (wifi/roaming only)
 
     def to_dict(self) -> dict:
         return asdict(self)

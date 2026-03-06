@@ -116,13 +116,39 @@ body {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 12px;
-    text-align: center;
+    display: flex;
+    flex-direction: column;
 }
 .wan-card.up { border-left: 3px solid var(--success); }
+.wan-card.link { border-left: 3px solid var(--warning); }
 .wan-card.down { border-left: 3px solid var(--danger); }
-.wan-name { font-weight: 700; font-size: 16px; }
-.wan-iface { font-size: 12px; color: var(--text-muted); }
-.wan-ip { font-size: 14px; margin: 4px 0; }
+.wan-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 8px;
+}
+.wan-name { font-weight: 700; font-size: 16px; line-height: 1.2; }
+.wan-iface { font-size: 11px; color: var(--text-muted); }
+.wan-info {
+    width: 100%;
+    font-size: 13px;
+    border-collapse: collapse;
+    flex: 1;
+}
+.wan-info td { padding: 2px 0; vertical-align: top; }
+.wan-info .wl {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    width: 32px;
+    padding-right: 8px;
+    white-space: nowrap;
+}
+.wan-info .wv {
+    word-break: break-all;
+}
+.wan-restart { margin-top: 8px; width: 100%; }
 
 /* Status badge */
 .badge {
@@ -134,6 +160,7 @@ body {
     text-transform: uppercase;
 }
 .badge-up { background: var(--success); color: white; }
+.badge-link { background: var(--warning); color: white; }
 .badge-down { background: var(--danger); color: white; }
 .badge-warn { background: var(--warning); color: white; }
 

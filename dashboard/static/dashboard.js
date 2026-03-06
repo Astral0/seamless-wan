@@ -134,34 +134,60 @@ async function loadWanPublicIps() {
     if (resp && resp.ok) {
         wanPublicIps = resp.data;
         // Update any already-rendered WAN cards
-        for (const [name, pip] of Object.entries(wanPublicIps)) {
+        for (const [name, info] of Object.entries(wanPublicIps)) {
+            const pip = typeof info === "string" ? info : info.ip || "";
+            const isp = typeof info === "object" ? (info.isp || "") : "";
             const el = document.getElementById("wan-pip-" + name);
             if (el) el.textContent = pip;
+            const ispEl = document.getElementById("wan-isp-" + name);
+            if (ispEl) {
+                ispEl.textContent = isp;
+                if (isp) ispEl.parentElement.style.display = "";
+            }
         }
     }
 }
 
 function renderWans(wans) {
     const grid = document.getElementById("wan-grid");
-    const labels = { usb_tethering: "USB", wifi: "WiFi", wifi_roaming: "Roaming" };
+    const labels = { usb_tethering: "USB Tethering", wifi: "WiFi", wifi_roaming: "WiFi Roaming" };
     grid.innerHTML = wans.map(w => {
-        const cls = w.up ? "up" : "down";
-        const badge = w.up
-            ? '<span class="badge badge-up">UP</span>'
-            : '<span class="badge badge-down">DOWN</span>';
-        const pip = wanPublicIps[w.name] || "";
-        const pipHtml = w.up
-            ? `<div class="wan-pip" style="font-size:11px;color:var(--text-muted)">ext: <span id="wan-pip-${w.name}">${pip || "..."}</span></div>`
-            : "";
+        // 3 states: up (green) = OMR routed, link (orange) = interface active but no VPS, down (red)
+        let cls, badgeCls, badgeText;
+        if (w.up) {
+            cls = "up"; badgeCls = "badge-up"; badgeText = "UP";
+        } else if (w.link) {
+            cls = "link"; badgeCls = "badge-link"; badgeText = "LINK";
+        } else {
+            cls = "down"; badgeCls = "badge-down"; badgeText = "DOWN";
+        }
+        const raw = wanPublicIps[w.name];
+        const pip = raw ? (typeof raw === "string" ? raw : raw.ip || "") : "";
+        const isp = raw && typeof raw === "object" ? (raw.isp || "") : "";
+        // Build info rows
+        let rows = "";
+        if (w.ssid) {
+            rows += `<tr><td class="wl">SSID</td><td class="wv">${w.ssid}</td></tr>`;
+        }
+        if (w.ip) {
+            rows += `<tr><td class="wl">IP</td><td class="wv">${w.ip}</td></tr>`;
+        }
+        if (w.up) {
+            rows += `<tr><td class="wl">Ext</td><td class="wv"><span id="wan-pip-${w.name}">${pip || "..."}</span></td></tr>`;
+            rows += `<tr><td class="wl">ISP</td><td class="wv"><span id="wan-isp-${w.name}">${isp || "..."}</span></td></tr>`;
+        } else {
+            rows += `<tr style="display:none"><td></td><td><span id="wan-pip-${w.name}"></span><span id="wan-isp-${w.name}"></span></td></tr>`;
+        }
         return `<div class="wan-card ${cls}">
-            <div class="wan-name">${w.name}</div>
-            <div class="wan-iface">${w.interface || "?"} &middot; ${labels[w.device_type] || w.device_type}</div>
-            <div class="wan-ip">${w.ip || "&mdash;"}</div>
-            ${pipHtml}
-            ${badge}
-            <div style="margin-top:8px">
-                <button class="btn btn-outline btn-sm" onclick="restartWan('${w.name}')">Restart</button>
+            <div class="wan-header">
+                <div>
+                    <div class="wan-name">${w.name}</div>
+                    <div class="wan-iface">${w.interface || "?"} &middot; ${labels[w.device_type] || w.device_type}</div>
+                </div>
+                <span class="badge ${badgeCls}">${badgeText}</span>
             </div>
+            <table class="wan-info">${rows}</table>
+            <button class="btn btn-outline btn-sm wan-restart" onclick="restartWan('${w.name}')">Restart</button>
         </div>`;
     }).join("");
 }

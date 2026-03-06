@@ -107,7 +107,7 @@ def get_system_status() -> SystemStatus:
 
 def get_wan_status() -> list[WANStatus]:
     """Get status of all WAN interfaces dynamically from UCI."""
-    # Single SSH call: discover WANs, get device/type, check IP & link status
+    # Single SSH call: discover WANs, get device/type, check IP, link & OMR state
     r = run_ssh(
         r"""
         for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1 | grep '^wan'); do
@@ -125,18 +125,32 @@ def get_wan_status() -> list[WANStatus]:
                 dev=$(/opt/wifi-roaming.sh status 2>/dev/null | head -1 | awk '{print $2}')
                 [ -n "$dev" ] && dtype="wifi_roaming"
             fi
-            # Get IP
+            # Get IP and link state
             ip=""
-            up="no"
+            link="no"
             if [ -n "$dev" ]; then
                 ip=$(ip addr show dev "$dev" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
                 if [ -n "$ip" ]; then
-                    up="yes"
+                    link="yes"
                 elif ip link show "$dev" 2>/dev/null | grep -q UP; then
-                    up="yes"
+                    link="yes"
                 fi
             fi
-            echo "$iface|$dev|$dtype|$ip|$up"
+            # OMR tracker state = real connectivity (can reach VPS)
+            omr_state=$(uci get openmptcprouter.$iface.state 2>/dev/null)
+            if [ "$omr_state" = "up" ]; then
+                up="yes"
+            else
+                up="no"
+            fi
+            # Get connected SSID for wifi interfaces
+            ssid=""
+            case "$dtype" in
+                wifi|wifi_roaming)
+                    [ -n "$dev" ] && ssid=$(iw dev "$dev" link 2>/dev/null | awk '/SSID:/{$1=""; print substr($0,2)}')
+                    ;;
+            esac
+            echo "$iface|$dev|$dtype|$ip|$up|$link|$ssid"
         done
         """,
         timeout=15,
@@ -146,35 +160,43 @@ def get_wan_status() -> list[WANStatus]:
     if r.ok:
         for line in r.stdout.splitlines():
             parts = line.strip().split("|")
-            if len(parts) >= 5:
+            if len(parts) >= 6:
                 wans.append(WANStatus(
                     name=parts[0],
                     interface=parts[1],
                     device_type=parts[2],
                     ip=parts[3],
                     up=parts[4] == "yes",
+                    link=parts[5] == "yes",
+                    ssid=parts[6] if len(parts) >= 7 else "",
                 ))
 
     return wans
 
 
-def get_wan_public_ips() -> dict[str, str]:
-    """Get public IP for each WAN from OMR config (instant, no curl)."""
+def get_wan_public_ips() -> dict[str, dict]:
+    """Get public IP and ISP for each WAN from OMR config + ip-api.com."""
     r = run_ssh(
         r"""
         for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1 | grep '^wan'); do
             pip=$(uci get openmptcprouter.$iface.publicip 2>/dev/null)
-            [ -n "$pip" ] && echo "$iface|$pip"
+            if [ -n "$pip" ]; then
+                isp=$(curl -s --max-time 3 "http://ip-api.com/line/$pip?fields=isp" 2>/dev/null)
+                echo "$iface|$pip|$isp"
+            fi
         done
         """,
-        timeout=5,
+        timeout=20,
     )
     result = {}
     if r.ok:
         for line in r.stdout.splitlines():
-            parts = line.strip().split("|", 1)
-            if len(parts) == 2 and parts[1]:
-                result[parts[0]] = parts[1]
+            parts = line.strip().split("|")
+            if len(parts) >= 2 and parts[1]:
+                result[parts[0]] = {
+                    "ip": parts[1],
+                    "isp": parts[2] if len(parts) >= 3 else "",
+                }
     return result
 
 
