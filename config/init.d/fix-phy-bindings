@@ -1,0 +1,12 @@
+#!/bin/sh /etc/rc.common
+# seamless-wan: Fix WiFi phy bindings at boot
+# Must run AFTER wifi (START=20) but BEFORE wifi-roaming (START=98)
+
+START=96
+STOP=10
+USE_PROCD=1
+
+start_service() {
+    # Run once at boot (not a daemon), with --wait to handle timing
+    /opt/fix-phy-bindings.sh --wait &
+}
