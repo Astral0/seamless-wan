@@ -98,13 +98,43 @@ async function pollStatus() {
     // System
     document.getElementById("sys-uptime").textContent = d.system.uptime || "--";
     document.getElementById("sys-ip").textContent = d.system.public_ip || "--";
-    document.getElementById("sys-temp").textContent = d.system.temp_celsius ? d.system.temp_celsius + "\u00B0C" : "--";
+    // Temperature with color
+    const tempEl = document.getElementById("sys-temp");
+    if (d.system.temp_celsius) {
+        const t = d.system.temp_celsius;
+        const cls = t > 80 ? "badge-down" : t > 70 ? "badge-warn" : "badge-up";
+        tempEl.innerHTML = `<span class="badge ${cls}">${t}\u00B0C</span>`;
+    } else {
+        tempEl.textContent = "--";
+    }
 
+    // Power: decoded throttle flags + USB errors
     const powerEl = document.getElementById("sys-power");
-    if (d.system.throttled_ok) {
+    const issues = d.system.power_issues || [];
+    const usbErr = d.system.usb_errors || 0;
+    if (issues.length === 0 && usbErr === 0) {
         powerEl.innerHTML = '<span class="badge badge-up">OK</span>';
     } else {
-        powerEl.innerHTML = '<span class="badge badge-warn">' + d.system.throttled + '</span>';
+        let html = "";
+        if (issues.length > 0) {
+            const cls = issues.some(i => !i.includes("has occurred")) ? "badge-down" : "badge-warn";
+            html += `<span class="badge ${cls}" title="${issues.join('\n')}">\u26A0 ${issues.length} alert${issues.length > 1 ? "s" : ""}</span>`;
+        }
+        if (usbErr > 0) {
+            html += ` <span class="badge badge-warn" title="USB errors in dmesg">USB \u00D7${usbErr}</span>`;
+        }
+        powerEl.innerHTML = html;
+    }
+
+    // Tunnel WANs count: UP vs active (link up), ignore inactive WANs
+    const wansUp = d.wans.filter(w => w.up).length;
+    const wansActive = d.wans.filter(w => w.link).length;
+    const twEl = document.getElementById("sys-tunnel-wans");
+    if (wansActive === 0) {
+        twEl.innerHTML = '<span class="badge badge-down">0</span>';
+    } else {
+        const twCls = wansUp === wansActive ? "badge-up" : wansUp === 0 ? "badge-down" : "badge-warn";
+        twEl.innerHTML = `<span class="badge ${twCls}">${wansUp} / ${wansActive}</span>`;
     }
 
     // WANs — detect IP changes to refresh public IPs

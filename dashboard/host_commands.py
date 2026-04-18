@@ -73,15 +73,38 @@ def shell_escape(s: str) -> str:
 
 # --- Status commands ---
 
+# RPi throttle flag bits → human-readable labels
+_THROTTLE_FLAGS = {
+    0:  "Under-voltage detected",
+    1:  "Arm frequency capped",
+    2:  "Currently throttled",
+    3:  "Soft temperature limit active",
+    16: "Under-voltage has occurred",
+    17: "Arm frequency capping has occurred",
+    18: "Throttling has occurred",
+    19: "Soft temperature limit has occurred",
+}
+
+
+def _decode_throttle(hex_str: str) -> list[str]:
+    """Decode vcgencmd throttle hex into human-readable issues."""
+    try:
+        val = int(hex_str, 16)
+    except ValueError:
+        return []
+    return [label for bit, label in _THROTTLE_FLAGS.items() if val & (1 << bit)]
+
+
 def get_system_status() -> SystemStatus:
-    """Get system status (uptime, temp, throttling, public IP)."""
+    """Get system status (uptime, temp, throttling, USB errors, public IP)."""
     status = SystemStatus()
 
     # Single SSH call for local system info (fast)
     r = run_ssh(
         "echo \"UP=$(uptime | sed 's/.*up //' | sed 's/,.*load.*//')\";"
         "echo \"TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)\";"
-        "echo \"THROT=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)\"",
+        "echo \"THROT=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)\";"
+        "echo \"USBERR=$(dmesg 2>/dev/null | grep -ciE 'over.?current|under.?volt|power.?supply')\"",
         timeout=10,
     )
     if r.ok:
@@ -96,6 +119,12 @@ def get_system_status() -> SystemStatus:
             elif line.startswith("THROT="):
                 status.throttled = line[6:].strip() or "0x0"
                 status.throttled_ok = status.throttled == "0x0"
+                status.power_issues = _decode_throttle(status.throttled)
+            elif line.startswith("USBERR="):
+                try:
+                    status.usb_errors = int(line[7:].strip())
+                except ValueError:
+                    pass
 
     # Public IP in separate call (can be slow, non-critical)
     r = run_ssh("curl -s --max-time 4 ifconfig.me 2>/dev/null", timeout=8)

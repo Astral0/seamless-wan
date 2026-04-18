@@ -47,6 +47,12 @@ class SystemStatus:
     temp_celsius: int = 0
     throttled: str = "0x0"
     throttled_ok: bool = True
+    power_issues: list = None   # decoded throttle flags
+    usb_errors: int = 0         # USB error count from dmesg
+
+    def __post_init__(self):
+        if self.power_issues is None:
+            self.power_issues = []
 
     def to_dict(self) -> dict:
         return asdict(self)
