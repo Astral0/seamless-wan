@@ -182,6 +182,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ))
             return
 
+        # GET /api/throughput — /proc/net/dev snapshot, client computes rates
+        if path == "/api/throughput":
+            # 0.5s cache lets multiple concurrent clients share the SSH call
+            self.send_json(api_success(
+                host_commands.cached("api_throughput", 0.5, host_commands.get_throughput)
+            ))
+            return
+
         # GET /api/roaming/status
         if path == "/api/roaming/status":
             status = host_commands.get_roaming_status()

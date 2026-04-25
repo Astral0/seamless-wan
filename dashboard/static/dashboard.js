@@ -1,11 +1,15 @@
 /* seamless-wan dashboard — dashboard.js */
 
 let pollTimer = null;
+let throughputTimer = null;
 let editingSsid = null; // null = adding, string = editing
 let connectAndAdd = false; // true when connecting from scan results
 let wanPublicIps = {}; // cached public IPs per WAN
 let lastWanIps = {}; // track internal IPs to detect changes
 let wanProbes = {}; // wan-monitor probe results: name -> {status, failures, ...}
+let prevThroughput = null; // last /proc/net/dev snapshot
+const TP_HISTORY_SIZE = 30; // 30 samples * 2s = 60s window
+const tpHistory = {}; // name -> [{rx_bps, tx_bps}, ...]
 
 // --- API Client ---
 
@@ -64,6 +68,7 @@ function showLogin() {
     document.getElementById("login-screen").style.display = "";
     document.getElementById("dashboard").style.display = "none";
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (throughputTimer) { clearInterval(throughputTimer); throughputTimer = null; }
 }
 
 function showDashboard() {
@@ -73,8 +78,11 @@ function showDashboard() {
     pollStatus();
     loadKnownNetworks();
     loadServices();
+    pollThroughput();
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(pollStatus, 5000);
+    if (throughputTimer) clearInterval(throughputTimer);
+    throughputTimer = setInterval(pollThroughput, 2000);
 }
 
 // Enter key on login form
@@ -161,6 +169,134 @@ async function pollStatus() {
     renderTunnel(d.tunnel);
 
     dot.style.background = "#22c55e";
+}
+
+// Display roles for throughput interfaces. Order matters (rendered top-down).
+// Names are matched by prefix so phyN-staX / phyN-apX both work.
+const TP_ROLES = [
+    { match: n => n === "tun0",                label: "Tunnel",     group: "tunnel" },
+    { match: n => n.startsWith("usb"),         label: "WAN (USB)",  group: "wan" },
+    { match: n => /^phy\d+-sta/.test(n),       label: "WAN (WiFi)", group: "wan" },
+    { match: n => /^phy\d+-ap/.test(n),        label: "AP (WiFi)",  group: "lan" },
+    { match: n => n === "eth0",                label: "LAN (eth0)", group: "lan" },
+];
+
+function classifyInterface(name) {
+    for (const r of TP_ROLES) {
+        if (r.match(name)) return r;
+    }
+    return null;
+}
+
+function formatRate(bps) {
+    if (!bps || bps < 1) return "0 b/s";
+    const units = ["b/s", "Kb/s", "Mb/s", "Gb/s"];
+    let v = bps, i = 0;
+    while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+    return v >= 100 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
+}
+
+function sparkline(samples, accessor, color) {
+    // 30 samples, width 100, height 26
+    const W = 100, H = 26;
+    if (!samples || samples.length < 2) {
+        return `<svg width="${W}" height="${H}"></svg>`;
+    }
+    const values = samples.map(accessor);
+    const max = Math.max(1, ...values);
+    const step = W / (TP_HISTORY_SIZE - 1);
+    // pad with 0s on the left so newest samples are right-aligned
+    const padded = Array(TP_HISTORY_SIZE - values.length).fill(0).concat(values);
+    const points = padded.map((v, i) => {
+        const x = (i * step).toFixed(1);
+        const y = (H - (v / max) * (H - 2) - 1).toFixed(1);
+        return `${x},${y}`;
+    }).join(" ");
+    return `<svg width="${W}" height="${H}" style="display:block">
+        <polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5" />
+    </svg>`;
+}
+
+async function pollThroughput() {
+    const resp = await api("GET", "/api/throughput");
+    if (!resp || !resp.ok || !resp.data) return;
+    const data = resp.data;
+
+    if (prevThroughput) {
+        const dt = (data.timestamp_ms - prevThroughput.timestamp_ms) / 1000;
+        if (dt > 0.1) {
+            for (const [name, cur] of Object.entries(data.interfaces)) {
+                const prev = prevThroughput.interfaces[name];
+                if (!prev) continue;
+                const rx_bps = Math.max(0, ((cur.rx_bytes - prev.rx_bytes) * 8) / dt);
+                const tx_bps = Math.max(0, ((cur.tx_bytes - prev.tx_bytes) * 8) / dt);
+                if (!tpHistory[name]) tpHistory[name] = [];
+                tpHistory[name].push({ rx_bps, tx_bps });
+                if (tpHistory[name].length > TP_HISTORY_SIZE) {
+                    tpHistory[name].shift();
+                }
+            }
+            renderThroughput(data.interfaces);
+        }
+    }
+    prevThroughput = data;
+}
+
+function renderThroughput(interfaces) {
+    const grid = document.getElementById("throughput-grid");
+    if (!grid) return;
+
+    // Group interfaces by role
+    const groups = { wan: [], tunnel: [], lan: [] };
+    for (const name of Object.keys(interfaces)) {
+        const role = classifyInterface(name);
+        if (!role) continue;
+        groups[role.group].push({ name, role, hist: tpHistory[name] || [] });
+    }
+
+    // Compute group totals (sum of latest sample)
+    const totals = {};
+    for (const [g, items] of Object.entries(groups)) {
+        let rx = 0, tx = 0;
+        items.forEach(it => {
+            const last = it.hist[it.hist.length - 1];
+            if (last) { rx += last.rx_bps; tx += last.tx_bps; }
+        });
+        totals[g] = { rx, tx };
+    }
+
+    const renderRow = ({ name, role, hist }) => {
+        const last = hist[hist.length - 1] || { rx_bps: 0, tx_bps: 0 };
+        return `<tr>
+            <td style="padding:6px 8px;white-space:nowrap">
+                <div style="font-weight:600">${role.label}</div>
+                <div style="color:var(--text-muted);font-size:11px">${name}</div>
+            </td>
+            <td style="padding:6px 8px;text-align:right;color:#2563eb;white-space:nowrap">
+                <div style="font-variant-numeric:tabular-nums">↓ ${formatRate(last.rx_bps)}</div>
+                ${sparkline(hist, s => s.rx_bps, "#2563eb")}
+            </td>
+            <td style="padding:6px 8px;text-align:right;color:#059669;white-space:nowrap">
+                <div style="font-variant-numeric:tabular-nums">↑ ${formatRate(last.tx_bps)}</div>
+                ${sparkline(hist, s => s.tx_bps, "#059669")}
+            </td>
+        </tr>`;
+    };
+
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+    // Show WAN total first if multiple WANs
+    if (groups.wan.length > 1) {
+        html += `<tr style="border-bottom:1px solid var(--border);background:#f9fafb">
+            <td style="padding:6px 8px;font-weight:700">WAN total</td>
+            <td style="padding:6px 8px;text-align:right;color:#2563eb;font-weight:700;font-variant-numeric:tabular-nums">↓ ${formatRate(totals.wan.rx)}</td>
+            <td style="padding:6px 8px;text-align:right;color:#059669;font-weight:700;font-variant-numeric:tabular-nums">↑ ${formatRate(totals.wan.tx)}</td>
+        </tr>`;
+    }
+    html += groups.wan.map(renderRow).join("");
+    html += groups.tunnel.map(renderRow).join("");
+    html += groups.lan.map(renderRow).join("");
+    html += "</table>";
+    grid.innerHTML = html;
 }
 
 function toggleHistory() {

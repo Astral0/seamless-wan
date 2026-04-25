@@ -499,6 +499,34 @@ def get_service_probes() -> dict:
         return {"timestamp": 0, "services": []}
 
 
+def get_throughput() -> dict:
+    """Snapshot of /proc/net/dev — caller computes deltas across snapshots."""
+    r = run_ssh("cat /proc/net/dev 2>/dev/null", timeout=5)
+    interfaces: dict[str, dict] = {}
+    if r.ok:
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if ":" not in line:
+                continue
+            name, rest = line.split(":", 1)
+            name = name.strip()
+            # Skip irrelevant interfaces
+            if name in ("lo",) or name.startswith(("ip6tnl", "sit", "gre", "erspan", "teql", "ip6gre")):
+                continue
+            parts = rest.split()
+            if len(parts) < 9:
+                continue
+            try:
+                interfaces[name] = {
+                    "rx_bytes": int(parts[0]),
+                    "tx_bytes": int(parts[8]),
+                }
+            except (ValueError, IndexError):
+                continue
+    import time as _t
+    return {"timestamp_ms": int(_t.time() * 1000), "interfaces": interfaces}
+
+
 def get_events(limit: int = 100) -> dict:
     """Return recent monitoring events from syslog (logread).
 
