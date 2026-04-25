@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+# seamless-wan: WAN monitor + auto-recovery daemon
+# Probes each WAN's actual internet connectivity, detects captive portals,
+# auto-runs ifup on dead interfaces.
+
+START=99
+STOP=10
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /opt/wan-monitor.sh
+    procd_set_param respawn 3600 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}

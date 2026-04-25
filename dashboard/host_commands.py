@@ -300,6 +300,26 @@ def _refresh_wan_public_ips() -> dict[str, dict]:
     return result
 
 
+def get_wan_probes() -> dict:
+    """Return wan-monitor probe status from /tmp/wan-monitor.json on the host."""
+    r = run_ssh("cat /tmp/wan-monitor.json 2>/dev/null", timeout=5)
+    if not r.ok or not r.stdout:
+        return {"timestamp": 0, "wans": []}
+    try:
+        import json as _j
+        return _j.loads(r.stdout)
+    except (ValueError, TypeError):
+        return {"timestamp": 0, "wans": []}
+
+
+def trigger_captive_firefox() -> CommandResult:
+    """Launch the captive-portal Firefox on the host (in the chroot)."""
+    return run_ssh(
+        "chroot /mnt/data /usr/local/bin/captive-firefox >/dev/null 2>&1 &",
+        timeout=5,
+    )
+
+
 def get_wan_public_ips() -> dict[str, dict]:
     """Return cached public IPs/ISPs. Refreshed in the background."""
     cached_val = cache_get("wan_public_ips")

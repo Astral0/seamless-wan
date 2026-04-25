@@ -5,6 +5,7 @@ let editingSsid = null; // null = adding, string = editing
 let connectAndAdd = false; // true when connecting from scan results
 let wanPublicIps = {}; // cached public IPs per WAN
 let lastWanIps = {}; // track internal IPs to detect changes
+let wanProbes = {}; // wan-monitor probe results: name -> {status, failures, ...}
 
 // --- API Client ---
 
@@ -152,11 +153,47 @@ async function pollStatus() {
     renderWans(d.wans);
 
     if (ipChanged) loadWanPublicIps();
+    loadWanProbes();
 
     // Tunnel
     renderTunnel(d.tunnel);
 
     dot.style.background = "#22c55e";
+}
+
+async function loadWanProbes() {
+    const resp = await api("GET", "/api/wan/probes");
+    if (!resp || !resp.ok || !resp.data || !Array.isArray(resp.data.wans)) return;
+    wanProbes = {};
+    resp.data.wans.forEach(p => { wanProbes[p.name] = p; });
+    // Update probe badges if cards already rendered
+    Object.entries(wanProbes).forEach(([name, p]) => {
+        const el = document.getElementById("wan-probe-" + name);
+        if (el) el.innerHTML = probeBadge(p.status);
+        const cap = document.getElementById("wan-captive-" + name);
+        if (cap) cap.style.display = p.status === "captive" ? "" : "none";
+    });
+}
+
+function probeBadge(status) {
+    switch (status) {
+        case "internet": return '<span class="badge badge-up" title="Probe OK">INTERNET</span>';
+        case "captive":  return '<span class="badge badge-warn" title="Captive portal detected">CAPTIVE</span>';
+        case "timeout":  return '<span class="badge badge-down" title="No response from probe URL">TIMEOUT</span>';
+        case "no_ip":    return '<span class="badge badge-down" title="Interface up but no IP">NO IP</span>';
+        case "no_device":return '<span class="badge badge-down" title="Device missing">NO DEV</span>';
+        case "unknown":  return '<span class="badge badge-link" title="Probe pending">…</span>';
+        default:         return `<span class="badge badge-down" title="Probe error: ${status}">ERR</span>`;
+    }
+}
+
+async function openCaptivePortal() {
+    const resp = await api("POST", "/api/wan/captive", {});
+    if (resp && resp.ok) {
+        alert("Captive Firefox launched in noVNC. Validate the portal there.");
+    } else {
+        alert("Failed to launch captive Firefox: " + (resp ? resp.error : "no response"));
+    }
 }
 
 async function loadWanPublicIps() {
@@ -208,15 +245,24 @@ function renderWans(wans) {
         } else {
             rows += `<tr style="display:none"><td></td><td><span id="wan-pip-${w.name}"></span><span id="wan-isp-${w.name}"></span></td></tr>`;
         }
+        const probe = wanProbes[w.name];
+        const probeHtml = probe ? probeBadge(probe.status) : probeBadge("unknown");
+        const isCaptive = probe && probe.status === "captive";
         return `<div class="wan-card ${cls}">
             <div class="wan-header">
                 <div>
                     <div class="wan-name">${w.name}</div>
                     <div class="wan-iface">${w.interface || "?"} &middot; ${labels[w.device_type] || w.device_type}</div>
                 </div>
-                <span class="badge ${badgeCls}">${badgeText}</span>
+                <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+                    <span class="badge ${badgeCls}">${badgeText}</span>
+                    <span id="wan-probe-${w.name}">${probeHtml}</span>
+                </div>
             </div>
             <table class="wan-info">${rows}</table>
+            <div id="wan-captive-${w.name}" style="display:${isCaptive ? "" : "none"};margin-bottom:6px">
+                <button class="btn btn-warn btn-sm" onclick="openCaptivePortal()">Open captive portal</button>
+            </div>
             <button class="btn btn-outline btn-sm wan-restart" onclick="restartWan('${w.name}')">Restart</button>
         </div>`;
     }).join("");

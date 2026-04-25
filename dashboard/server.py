@@ -156,6 +156,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(api_success(ips))
             return
 
+        # GET /api/wan/probes — wan-monitor probe results (cached on host)
+        if path == "/api/wan/probes":
+            self.send_json(api_success(host_commands.get_wan_probes()))
+            return
+
         # GET /api/roaming/status
         if path == "/api/roaming/status":
             status = host_commands.get_roaming_status()
@@ -227,6 +232,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(api_success({"message": f"{wan_name} restarted"}))
             else:
                 self.send_json(api_error(result.stderr or "Restart failed"), 500)
+            return
+
+        # POST /api/wan/captive — launch the captive-portal Firefox on the host
+        if path == "/api/wan/captive":
+            result = host_commands.trigger_captive_firefox()
+            if result.ok:
+                self.send_json(api_success({"message": "Captive Firefox launched"}))
+            else:
+                self.send_json(api_error(result.stderr or "Launch failed"), 500)
             return
 
         # POST /api/roaming/scan
