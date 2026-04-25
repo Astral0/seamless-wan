@@ -155,11 +155,60 @@ async function pollStatus() {
     if (ipChanged) loadWanPublicIps();
     loadWanProbes();
     loadLan();
+    loadAlerts();
 
     // Tunnel
     renderTunnel(d.tunnel);
 
     dot.style.background = "#22c55e";
+}
+
+async function loadAlerts() {
+    const resp = await api("GET", "/api/alerts");
+    const banner = document.getElementById("alerts-banner");
+    if (!banner) return;
+    if (!resp || !resp.ok || !resp.data) { banner.style.display = "none"; return; }
+    const alerts = resp.data.alerts || [];
+    if (alerts.length === 0) { banner.style.display = "none"; banner.innerHTML = ""; return; }
+
+    const sevColor = {
+        critical: { bg: "#fee2e2", border: "#dc2626", text: "#991b1b" },
+        warning:  { bg: "#fef3c7", border: "#d97706", text: "#92400e" },
+        info:     { bg: "#dbeafe", border: "#2563eb", text: "#1e40af" },
+    };
+    const top = alerts.reduce((s, a) =>
+        ({critical:3, warning:2, info:1}[a.severity] > ({critical:3, warning:2, info:1}[s] || 0) ? a.severity : s),
+        "info");
+    const c = sevColor[top] || sevColor.info;
+
+    banner.style.display = "";
+    banner.innerHTML = `<div style="
+        background:${c.bg};border-left:4px solid ${c.border};color:${c.text};
+        padding:12px 14px;border-radius:6px;font-size:14px">
+        <div style="font-weight:600;margin-bottom:6px">
+            ${alerts.length} alert${alerts.length > 1 ? "s" : ""}
+        </div>
+        <ul style="margin:0;padding-left:18px;list-style:disc">
+            ${alerts.map(a => `<li style="margin:4px 0">
+                <strong>${a.severity.toUpperCase()}</strong> &middot; ${a.message}
+                ${actionButton(a)}
+            </li>`).join("")}
+        </ul>
+    </div>`;
+}
+
+function actionButton(a) {
+    if (!a.action) return "";
+    if (a.action === "captive_portal") {
+        return ` <button class="btn btn-sm" style="margin-left:6px" onclick="openCaptivePortal()">Open captive portal</button>`;
+    }
+    if (a.action === "restart_wan") {
+        return ` <button class="btn btn-sm" style="margin-left:6px" onclick="restartWan('${a.action_arg}')">Restart ${a.action_arg}</button>`;
+    }
+    if (a.action === "restart_service") {
+        return ` <button class="btn btn-sm" style="margin-left:6px" onclick="restartService('${a.action_arg}')">Restart ${a.action_arg}</button>`;
+    }
+    return "";
 }
 
 async function loadLan() {

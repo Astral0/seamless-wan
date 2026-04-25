@@ -168,6 +168,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ))
             return
 
+        # GET /api/alerts — aggregated alerts from wan-monitor, service-monitor, system
+        if path == "/api/alerts":
+            self.send_json(api_success(
+                host_commands.cached("api_alerts", 3.0, host_commands.get_alerts)
+            ))
+            return
+
         # GET /api/roaming/status
         if path == "/api/roaming/status":
             status = host_commands.get_roaming_status()

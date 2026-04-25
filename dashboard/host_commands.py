@@ -487,6 +487,141 @@ def get_wan_probes() -> dict:
         return {"timestamp": 0, "wans": []}
 
 
+def get_service_probes() -> dict:
+    """Return service-monitor status from /tmp/service-monitor.json."""
+    r = run_ssh("cat /tmp/service-monitor.json 2>/dev/null", timeout=5)
+    if not r.ok or not r.stdout:
+        return {"timestamp": 0, "services": []}
+    try:
+        import json as _j
+        return _j.loads(r.stdout)
+    except (ValueError, TypeError):
+        return {"timestamp": 0, "services": []}
+
+
+def get_alerts() -> dict:
+    """Aggregate alerts from wan-monitor, service-monitor and system flags.
+
+    Output: {"alerts": [{"id", "severity", "message", "action", "since"}]}
+    severity: critical | warning | info
+    """
+    import time as _t
+    alerts: list[dict] = []
+    now = int(_t.time())
+
+    # ---- WAN alerts ----
+    wp = get_wan_probes()
+    wans_by_name = {w["name"]: w for w in wp.get("wans", [])}
+
+    for w in wp.get("wans", []):
+        # Skip WANs that have no device (just absent hardware, not a problem)
+        if w.get("status") == "no_device":
+            continue
+        status = w.get("status", "unknown")
+        last_internet = w.get("last_internet", 0) or 0
+        since = w.get("since", 0) or 0
+
+        if status == "captive":
+            had_internet_recently = last_internet and (now - last_internet) < 24 * 3600
+            sev = "warning" if had_internet_recently else "info"
+            msg = f"{w['name']} captive portal"
+            if had_internet_recently:
+                mins = max(1, (now - last_internet) // 60)
+                msg += f" (lost internet {mins} min ago)"
+            alerts.append({
+                "id": f"wan-{w['name']}-captive",
+                "severity": sev,
+                "message": msg,
+                "action": "captive_portal",
+                "since": since,
+            })
+        elif status == "timeout" and w.get("link") == "yes":
+            mins = max(1, (now - since) // 60) if since else 0
+            alerts.append({
+                "id": f"wan-{w['name']}-timeout",
+                "severity": "warning",
+                "message": f"{w['name']} no internet ({mins} min)" if mins else f"{w['name']} no internet",
+                "action": "restart_wan",
+                "action_arg": w["name"],
+                "since": since,
+            })
+        elif status == "no_ip":
+            alerts.append({
+                "id": f"wan-{w['name']}-noip",
+                "severity": "warning",
+                "message": f"{w['name']} link up but no IP (DHCP failure?)",
+                "action": "restart_wan",
+                "action_arg": w["name"],
+                "since": since,
+            })
+        elif status.startswith("error_"):
+            alerts.append({
+                "id": f"wan-{w['name']}-error",
+                "severity": "warning",
+                "message": f"{w['name']} probe error: {status}",
+                "action": None,
+                "since": since,
+            })
+
+    # Tunnel down is critical only if at least one WAN has internet
+    tunnel_status = wp.get("tunnel", "unknown")
+    any_internet = any(w.get("status") == "internet" for w in wp.get("wans", []))
+    if tunnel_status == "down" and any_internet:
+        alerts.append({
+            "id": "tunnel-down",
+            "severity": "critical",
+            "message": "Tunnel down (Glorytun unreachable, but a WAN has internet)",
+            "action": None,
+            "since": 0,
+        })
+
+    if wp.get("dns") == "down":
+        alerts.append({
+            "id": "dns-down",
+            "severity": "critical",
+            "message": "Local DNS resolver not responding",
+            "action": None,
+            "since": 0,
+        })
+
+    # ---- Service alerts ----
+    sp = get_service_probes()
+    for s in sp.get("services", []):
+        if s.get("status") != "running":
+            sev = "critical" if s.get("capped") else "warning"
+            msg = f"Service {s['name']} is down"
+            if s.get("capped"):
+                msg += " (auto-restart capped, manual intervention needed)"
+            elif s.get("recent_restarts", 0) > 0:
+                msg += f" (auto-restarted {s['recent_restarts']}x recently)"
+            alerts.append({
+                "id": f"svc-{s['name']}",
+                "severity": sev,
+                "message": msg,
+                "action": "restart_service",
+                "action_arg": s["name"],
+                "since": s.get("since", 0),
+            })
+
+    # ---- System alerts ----
+    r = run_ssh("vcgencmd get_throttled 2>/dev/null | cut -d= -f2", timeout=3)
+    if r.ok and r.stdout:
+        try:
+            v = int(r.stdout.strip(), 16)
+        except ValueError:
+            v = 0
+        # NOW flags = currently happening (critical)
+        if v & 0x4:
+            alerts.append({"id": "thermal-now", "severity": "critical",
+                           "message": "CPU thermally throttled NOW", "action": None, "since": 0})
+        if v & 0x1:
+            alerts.append({"id": "undervoltage-now", "severity": "critical",
+                           "message": "Undervoltage NOW", "action": None, "since": 0})
+        # OCCURRED flags = warnings (informational, not in current dashboard since System card already shows them)
+
+    return {"timestamp": now, "alerts": alerts}
+
+
 def trigger_captive_firefox() -> CommandResult:
     """Launch the captive-portal Firefox on the host (in the chroot)."""
     return run_ssh(
