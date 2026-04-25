@@ -196,24 +196,35 @@ function formatRate(bps) {
     return v >= 100 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
 }
 
-function sparkline(samples, accessor, color) {
-    // 30 samples, width 100, height 26
-    const W = 100, H = 26;
+function areaChart(samples, height) {
+    // OpenVPN-style filled area chart with overlaid RX (yellow) and TX (orange).
+    const W = 320, H = height || 70;
     if (!samples || samples.length < 2) {
-        return `<svg width="${W}" height="${H}"></svg>`;
+        return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"></svg>`;
     }
-    const values = samples.map(accessor);
-    const max = Math.max(1, ...values);
+    const rxs = samples.map(s => s.rx_bps);
+    const txs = samples.map(s => s.tx_bps);
+    const max = Math.max(1, ...rxs, ...txs);
     const step = W / (TP_HISTORY_SIZE - 1);
-    // pad with 0s on the left so newest samples are right-aligned
-    const padded = Array(TP_HISTORY_SIZE - values.length).fill(0).concat(values);
-    const points = padded.map((v, i) => {
-        const x = (i * step).toFixed(1);
-        const y = (H - (v / max) * (H - 2) - 1).toFixed(1);
-        return `${x},${y}`;
-    }).join(" ");
-    return `<svg width="${W}" height="${H}" style="display:block">
-        <polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5" />
+
+    const buildPath = (vals) => {
+        const padded = Array(TP_HISTORY_SIZE - vals.length).fill(0).concat(vals);
+        const pts = padded.map((v, i) =>
+            `${(i * step).toFixed(1)},${(H - (v / max) * (H - 2) - 1).toFixed(1)}`
+        );
+        // close the path to the bottom for filled area
+        return `M0,${H} L${pts.join(" L")} L${W},${H} Z`;
+    };
+
+    return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}"
+            preserveAspectRatio="none"
+            style="display:block;background:#fafaf9;border-radius:4px">
+        <path d="${buildPath(rxs)}" fill="#fbbf24" fill-opacity="0.85" />
+        <path d="${buildPath(txs)}" fill="#ea580c" fill-opacity="0.65" />
+        <text x="6" y="14" font-size="11" font-family="monospace"
+              fill="#6b7280">${formatRate(max)}</text>
+        <text x="6" y="${H - 4}" font-size="11" font-family="monospace"
+              fill="#6b7280">0</text>
     </svg>`;
 }
 
@@ -242,6 +253,27 @@ async function pollThroughput() {
     prevThroughput = data;
 }
 
+// Latest non-zero sample over the visible window — used for the headline rates.
+function latestSample(hist) {
+    if (!hist || hist.length === 0) return { rx_bps: 0, tx_bps: 0 };
+    return hist[hist.length - 1];
+}
+
+// Sum a list of histories sample-by-sample (right-aligned) for a group total.
+function sumHistories(histories) {
+    const len = TP_HISTORY_SIZE;
+    const result = [];
+    for (let i = 0; i < len; i++) {
+        let rx = 0, tx = 0;
+        histories.forEach(h => {
+            const idx = h.length - len + i;
+            if (idx >= 0) { rx += h[idx].rx_bps; tx += h[idx].tx_bps; }
+        });
+        result.push({ rx_bps: rx, tx_bps: tx });
+    }
+    return result;
+}
+
 function renderThroughput(interfaces) {
     const grid = document.getElementById("throughput-grid");
     if (!grid) return;
@@ -254,49 +286,56 @@ function renderThroughput(interfaces) {
         groups[role.group].push({ name, role, hist: tpHistory[name] || [] });
     }
 
-    // Compute group totals (sum of latest sample)
-    const totals = {};
-    for (const [g, items] of Object.entries(groups)) {
-        let rx = 0, tx = 0;
-        items.forEach(it => {
-            const last = it.hist[it.hist.length - 1];
-            if (last) { rx += last.rx_bps; tx += last.tx_bps; }
-        });
-        totals[g] = { rx, tx };
-    }
-
-    const renderRow = ({ name, role, hist }) => {
-        const last = hist[hist.length - 1] || { rx_bps: 0, tx_bps: 0 };
-        return `<tr>
-            <td style="padding:6px 8px;white-space:nowrap">
-                <div style="font-weight:600">${role.label}</div>
-                <div style="color:var(--text-muted);font-size:11px">${name}</div>
-            </td>
-            <td style="padding:6px 8px;text-align:right;color:#2563eb;white-space:nowrap">
-                <div style="font-variant-numeric:tabular-nums">↓ ${formatRate(last.rx_bps)}</div>
-                ${sparkline(hist, s => s.rx_bps, "#2563eb")}
-            </td>
-            <td style="padding:6px 8px;text-align:right;color:#059669;white-space:nowrap">
-                <div style="font-variant-numeric:tabular-nums">↑ ${formatRate(last.tx_bps)}</div>
-                ${sparkline(hist, s => s.tx_bps, "#059669")}
-            </td>
-        </tr>`;
+    const renderCard = (label, sublabel, hist, isHero) => {
+        const last = latestSample(hist);
+        const chartH = isHero ? 110 : 70;
+        const numClass = isHero ? "font-size:22px" : "font-size:16px";
+        return `<div style="margin-bottom:14px;padding:12px;background:#fff;border:1px solid var(--border);border-radius:6px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+                <strong style="${isHero ? "font-size:15px" : ""}">${label}</strong>
+                <span style="color:var(--text-muted);font-size:11px;font-family:monospace">${sublabel}</span>
+            </div>
+            ${areaChart(hist, chartH)}
+            <div style="display:flex;justify-content:space-around;margin-top:10px">
+                <div style="text-align:center">
+                    <div style="font-size:11px;color:var(--text-muted);letter-spacing:.5px">BYTES IN</div>
+                    <div style="${numClass};font-weight:700;color:#d97706;font-variant-numeric:tabular-nums">
+                        &darr; ${formatRate(last.rx_bps)}
+                    </div>
+                </div>
+                <div style="text-align:center">
+                    <div style="font-size:11px;color:var(--text-muted);letter-spacing:.5px">BYTES OUT</div>
+                    <div style="${numClass};font-weight:700;color:#ea580c;font-variant-numeric:tabular-nums">
+                        &uarr; ${formatRate(last.tx_bps)}
+                    </div>
+                </div>
+            </div>
+        </div>`;
     };
 
-    let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
-    // Show WAN total first if multiple WANs
-    if (groups.wan.length > 1) {
-        html += `<tr style="border-bottom:1px solid var(--border);background:#f9fafb">
-            <td style="padding:6px 8px;font-weight:700">WAN total</td>
-            <td style="padding:6px 8px;text-align:right;color:#2563eb;font-weight:700;font-variant-numeric:tabular-nums">↓ ${formatRate(totals.wan.rx)}</td>
-            <td style="padding:6px 8px;text-align:right;color:#059669;font-weight:700;font-variant-numeric:tabular-nums">↑ ${formatRate(totals.wan.tx)}</td>
-        </tr>`;
+    let html = "";
+
+    // Hero: tunnel (it's the aggregated traffic the user actually cares about)
+    if (groups.tunnel.length > 0) {
+        const t = groups.tunnel[0];
+        html += renderCard("Tunnel", t.name, t.hist, true);
     }
-    html += groups.wan.map(renderRow).join("");
-    html += groups.tunnel.map(renderRow).join("");
-    html += groups.lan.map(renderRow).join("");
-    html += "</table>";
-    grid.innerHTML = html;
+
+    // WAN total + per-WAN
+    if (groups.wan.length > 1) {
+        const totalHist = sumHistories(groups.wan.map(w => w.hist));
+        html += renderCard("WAN total", `${groups.wan.length} interfaces`, totalHist, false);
+    }
+    groups.wan.forEach(w => {
+        html += renderCard(w.role.label, w.name, w.hist, false);
+    });
+
+    // LAN / AP last
+    groups.lan.forEach(w => {
+        html += renderCard(w.role.label, w.name, w.hist, false);
+    });
+
+    grid.innerHTML = html || '<div class="status-label">No interface data yet.</div>';
 }
 
 function toggleHistory() {
