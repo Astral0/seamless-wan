@@ -5,8 +5,9 @@ This is the open-source GitHub project for "Zero Coupure" — a mobile multi-WAN
 
 ## Related Memory
 Full project knowledge is maintained in Claude's auto-memory:
-- **Project state & architecture**: See `C:\Users\Astral\.claude\projects\C--Users-Astral\memory\zero-coupure.md`
-- **Full reinstall procedure**: See `C:\Users\Astral\.claude\projects\C--Users-Astral\memory\zero-coupure-reinstall.md`
+- **Connectivity & config**: See auto-memory `MEMORY.md` (SSH access, WiFi creds, key config choices)
+- **Network details**: See auto-memory `network-details.md` (interfaces, radios, routing tables, VPS)
+- **Known issues**: See auto-memory `known-issues.md` (captive portal, USB hub, DNS chain, etc.)
 
 Always consult these files for detailed technical knowledge about the RPi setup, VPS config, UCI commands, WiFi hardware, etc.
 
