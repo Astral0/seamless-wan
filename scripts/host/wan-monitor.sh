@@ -45,10 +45,12 @@ probe_wan() {
     esac
 }
 
-# Probe the tunnel (ping the peer). Echoes "up" or "down".
+# Probe the tunnel: send 3 pings with a 3s budget; accept if at least one
+# returns. Single-packet probes flag false positives during MPTCP bursts.
 probe_tunnel() {
     if [ ! -e /sys/class/net/tun0 ]; then echo down; return; fi
-    if ping -c 1 -W 2 -I tun0 10.255.255.1 >/dev/null 2>&1; then
+    out=$(ping -c 3 -W 3 -I tun0 10.255.255.1 2>/dev/null | tail -2)
+    if echo "$out" | grep -qE '[1-9][0-9]* received'; then
         echo up
     else
         echo down
@@ -157,8 +159,32 @@ while true; do
         esac
     done
 
-    probe_tunnel > "$WORK_DIR/tunnel"
-    probe_dns > "$WORK_DIR/dns"
+    # Tunnel and DNS probes with hysteresis: only flip "down" after 2 consecutive
+    # failures, to avoid spurious alerts on a single dropped packet.
+    new_tun=$(probe_tunnel)
+    cur_tun=$(read_or "$WORK_DIR/tunnel" up)
+    if [ "$new_tun" = "down" ]; then
+        prev_tun=$(read_or "$WORK_DIR/tunnel-prev" up)
+        if [ "$prev_tun" = "down" ]; then
+            echo down > "$WORK_DIR/tunnel"
+        fi
+        echo down > "$WORK_DIR/tunnel-prev"
+    else
+        echo up > "$WORK_DIR/tunnel"
+        echo up > "$WORK_DIR/tunnel-prev"
+    fi
+
+    new_dns=$(probe_dns)
+    if [ "$new_dns" = "down" ]; then
+        prev_dns=$(read_or "$WORK_DIR/dns-prev" up)
+        if [ "$prev_dns" = "down" ]; then
+            echo down > "$WORK_DIR/dns"
+        fi
+        echo down > "$WORK_DIR/dns-prev"
+    else
+        echo up > "$WORK_DIR/dns"
+        echo up > "$WORK_DIR/dns-prev"
+    fi
 
     build_json
     sleep "$INTERVAL"
