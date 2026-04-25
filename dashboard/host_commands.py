@@ -1,5 +1,6 @@
 """SSH command execution wrapper for communicating with the OMR host."""
 
+import os
 import re
 import subprocess
 import threading
@@ -12,15 +13,55 @@ from models import (
 
 SSH_KEY = "/home/claude/.ssh/id_ed25519"
 SSH_HOST = "root@127.0.0.1"
+
+# ControlMaster path — first call opens a multiplexed connection,
+# subsequent calls reuse it (no TCP handshake / key exchange overhead).
+_SSH_CTL_DIR = "/tmp/dashboard-ssh"
+os.makedirs(_SSH_CTL_DIR, exist_ok=True)
 SSH_OPTS = [
     "-i", SSH_KEY,
     "-o", "StrictHostKeyChecking=no",
     "-o", "ConnectTimeout=5",
     "-o", "BatchMode=yes",
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath={_SSH_CTL_DIR}/%C",
+    "-o", "ControlPersist=60s",
 ]
 
 # Global lock for write operations (UCI, config file)
 _write_lock = threading.Lock()
+
+# In-memory TTL cache: key -> (expiry, value)
+_cache: dict[str, tuple[float, object]] = {}
+_cache_lock = threading.Lock()
+
+
+def cached(key: str, ttl: float, fetch):
+    """Return cached value if fresh, otherwise fetch and store."""
+    now = time.time()
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and entry[0] > now:
+            return entry[1]
+    value = fetch()
+    with _cache_lock:
+        _cache[key] = (now + ttl, value)
+    return value
+
+
+def cache_set(key: str, value, ttl: float) -> None:
+    """Store a value in the cache (used by background refreshers)."""
+    with _cache_lock:
+        _cache[key] = (time.time() + ttl, value)
+
+
+def cache_get(key: str, default=None):
+    """Return cached value if fresh, else default. Does not fetch."""
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and entry[0] > time.time():
+            return entry[1]
+    return default
 
 # Valid characters for SSID (reject pipe to avoid config parsing issues)
 SSID_PATTERN = re.compile(r'^[a-zA-Z0-9 _\-\.@#&!+()]{1,32}$')
@@ -126,12 +167,42 @@ def get_system_status() -> SystemStatus:
                 except ValueError:
                     pass
 
-    # Public IP in separate call (can be slow, non-critical)
-    r = run_ssh("curl -s --max-time 4 ifconfig.me 2>/dev/null", timeout=8)
-    if r.ok and r.stdout:
-        status.public_ip = r.stdout.strip()
+    # Public IP comes from background refresher (see start_background_refreshers).
+    # Falls back to "" if not yet fetched, never blocks the status call.
+    status.public_ip = cache_get("public_ip", default="") or ""
 
     return status
+
+
+def _refresh_public_ip() -> str:
+    """Background fetch of the system's public IP (slow, hits external service)."""
+    r = run_ssh("curl -s --max-time 3 ifconfig.me 2>/dev/null", timeout=5)
+    return r.stdout.strip() if r.ok and r.stdout else ""
+
+
+_refresher_thread: threading.Thread | None = None
+
+
+def start_background_refreshers() -> None:
+    """Start background threads that periodically refresh slow data."""
+    global _refresher_thread
+    if _refresher_thread and _refresher_thread.is_alive():
+        return
+
+    def loop():
+        while True:
+            try:
+                cache_set("public_ip", _refresh_public_ip(), ttl=180)
+            except Exception:
+                pass
+            try:
+                cache_set("wan_public_ips", _refresh_wan_public_ips(), ttl=300)
+            except Exception:
+                pass
+            time.sleep(60)
+
+    _refresher_thread = threading.Thread(target=loop, daemon=True)
+    _refresher_thread.start()
 
 
 def get_wan_status() -> list[WANStatus]:
@@ -203,8 +274,8 @@ def get_wan_status() -> list[WANStatus]:
     return wans
 
 
-def get_wan_public_ips() -> dict[str, dict]:
-    """Get public IP and ISP for each WAN from OMR config + ip-api.com."""
+def _refresh_wan_public_ips() -> dict[str, dict]:
+    """Background fetch of public IPs + ISPs for each WAN."""
     r = run_ssh(
         r"""
         for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1 | grep '^wan'); do
@@ -215,7 +286,7 @@ def get_wan_public_ips() -> dict[str, dict]:
             fi
         done
         """,
-        timeout=20,
+        timeout=15,
     )
     result = {}
     if r.ok:
@@ -227,6 +298,18 @@ def get_wan_public_ips() -> dict[str, dict]:
                     "isp": parts[2] if len(parts) >= 3 else "",
                 }
     return result
+
+
+def get_wan_public_ips() -> dict[str, dict]:
+    """Return cached public IPs/ISPs. Refreshed in the background."""
+    cached_val = cache_get("wan_public_ips")
+    if cached_val is not None:
+        return cached_val
+    # First call before the background refresher has run — fetch synchronously
+    # but with a tight cap so it never blocks the UI for long.
+    val = _refresh_wan_public_ips()
+    cache_set("wan_public_ips", val, ttl=300)
+    return val
 
 
 def get_tunnel_status() -> TunnelStatus:

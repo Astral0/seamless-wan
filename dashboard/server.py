@@ -8,7 +8,7 @@ Usage: python3 server.py [--port 8080]
 import json
 import os
 import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, unquote
 
 import auth
@@ -130,16 +130,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(api_success({"pong": True}))
             return
 
-        # GET /api/status
+        # GET /api/status — cached 2s so concurrent clients don't hammer SSH
         if path == "/api/status":
-            sys_status = host_commands.get_system_status()
-            wans = host_commands.get_wan_status()
-            tunnel = host_commands.get_tunnel_status()
-            self.send_json(api_success({
-                "system": sys_status.to_dict(),
-                "wans": [w.to_dict() for w in wans],
-                "tunnel": tunnel.to_dict(),
-            }))
+            def _build():
+                sys_status = host_commands.get_system_status()
+                wans = host_commands.get_wan_status()
+                tunnel = host_commands.get_tunnel_status()
+                return {
+                    "system": sys_status.to_dict(),
+                    "wans": [w.to_dict() for w in wans],
+                    "tunnel": tunnel.to_dict(),
+                }
+            self.send_json(api_success(host_commands.cached("api_status", 2.0, _build)))
             return
 
         # GET /api/wan
@@ -364,7 +366,11 @@ def main() -> None:
             if arg == "--port" and i < len(sys.argv) - 1:
                 port = int(sys.argv[i + 1])
 
-    server = HTTPServer(("0.0.0.0", port), DashboardHandler)
+    # Start background refreshers for slow data (public IP, etc.)
+    host_commands.start_background_refreshers()
+
+    # ThreadingHTTPServer so a slow request can't block the others
+    server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     print(f"seamless-wan dashboard running on http://0.0.0.0:{port}")
     try:
         server.serve_forever()
