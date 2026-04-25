@@ -324,26 +324,80 @@ cp config/openbox/menu.xml /mnt/data/etc/xdg/openbox/
 /etc/init.d/novnc start
 ```
 
+## Phase 7b — Monitoring & auto-recovery
+
+Two procd daemons watch the WANs and the critical services, and write status JSON files consumed by the dashboard. See [monitoring.md](monitoring.md) for full details.
+
+```sh
+mount -o remount,rw /
+REPO_DIR=/root/seamless-wan   # adjust to where this repo is cloned
+
+# Daemons
+cp $REPO_DIR/scripts/host/wan-monitor.sh     /opt/wan-monitor.sh
+cp $REPO_DIR/scripts/host/service-monitor.sh /opt/service-monitor.sh
+cp $REPO_DIR/scripts/host/fix-phy-bindings.sh /opt/fix-phy-bindings.sh
+chmod +x /opt/wan-monitor.sh /opt/service-monitor.sh /opt/fix-phy-bindings.sh
+
+# Init scripts
+cp $REPO_DIR/config/init.d/wan-monitor       /etc/init.d/wan-monitor
+cp $REPO_DIR/config/init.d/service-monitor   /etc/init.d/service-monitor
+cp $REPO_DIR/config/init.d/fix-phy-bindings  /etc/init.d/fix-phy-bindings
+chmod +x /etc/init.d/wan-monitor /etc/init.d/service-monitor /etc/init.d/fix-phy-bindings
+
+/etc/init.d/wan-monitor enable     && /etc/init.d/wan-monitor start
+/etc/init.d/service-monitor enable && /etc/init.d/service-monitor start
+/etc/init.d/fix-phy-bindings enable
+```
+
+Tunable via env vars in the init.d service files (cf. `monitoring.md`).
+
+## Phase 7c — Web dashboard
+
+The dashboard runs inside the Alpine chroot on port 8080. Default login: `admin` / `seamless` (override with `DASHBOARD_USER` / `DASHBOARD_PASS` env vars).
+
+```sh
+CHROOT=/mnt/data
+mkdir -p $CHROOT/opt/dashboard/static
+cp $REPO_DIR/dashboard/*.py        $CHROOT/opt/dashboard/
+cp $REPO_DIR/dashboard/static/*    $CHROOT/opt/dashboard/static/
+cp $REPO_DIR/scripts/chroot/start-dashboard.sh $CHROOT/opt/start-dashboard.sh
+chmod +x $CHROOT/opt/start-dashboard.sh
+
+cp $REPO_DIR/config/init.d/dashboard /etc/init.d/dashboard
+chmod +x /etc/init.d/dashboard
+/etc/init.d/dashboard enable
+/etc/init.d/dashboard start
+```
+
+The dashboard talks to the host via SSH. Make sure the chroot's `claude` user (or whoever runs the dashboard) has its public key in the host's `/etc/dropbear/authorized_keys`. (Phase 6 already does this for the `claude` user.)
+
+Open `http://192.168.100.1:8080` from the LAN. See [dashboard.md](dashboard.md) for the full API and [monitoring.md](monitoring.md) for the alerts/events it surfaces.
+
 ## Phase 8 — Verification
 
 Run these checks to verify everything works:
 
 1. **Partition**: `mount | grep mnt/data` → ext4 mounted
 2. **noVNC**: Open http://192.168.100.1:6080/vnc.html
-3. **wan1**: `ip addr show usb0` → has IP
-4. **wan2**: `iw dev phyX-sta0 link` → Connected
-5. **wan3**: `ip addr show usb1` → has IP (tethering must be enabled on phone)
-6. **wan4**: `/opt/wifi-roaming.sh status`
-7. **Tunnel**: `ping -c 2 10.255.255.1`
-8. **Internet**: `curl -s http://icanhazip.com` → should show VPS IP
-9. **Trackers**: `ps | grep omr-tracker`
-10. **Captive portal**: `chroot /mnt/data su -l captive -c 'wget -qO- http://icanhazip.com'` → should show WiFi IP (not VPS)
-11. **Power monitor**: `logread | grep power-monitor`
+3. **Dashboard**: Open http://192.168.100.1:8080 → login admin/seamless
+4. **wan1**: `ip addr show usb0` → has IP
+5. **wan2**: `iw dev phyX-sta0 link` → Connected
+6. **wan3**: `ip addr show usb1` → has IP (tethering must be enabled on phone)
+7. **wan4**: `/opt/wifi-roaming.sh status`
+8. **Tunnel**: `ping -c 2 10.255.255.1`
+9. **Internet**: `curl -s http://icanhazip.com` → should show VPS IP
+10. **Trackers**: `ps | grep omr-tracker`
+11. **Captive portal**: `chroot /mnt/data su -l captive -c 'wget -qO- http://icanhazip.com'` → should show WiFi IP (not VPS)
+12. **wan-monitor**: `cat /tmp/wan-monitor.json` → each WAN should be `internet` or `captive`
+13. **service-monitor**: `cat /tmp/service-monitor.json` → all 4 services `running`
+14. **Power monitor**: `logread | grep power-monitor`
 
 ## Important Notes
 
 - USB tethering must be re-enabled on phones after each RPi reboot
-- WiFi interface names (`phyX-sta0`) change depending on USB detection order — always check with `iw dev`
+- WiFi interface names (`phyX-sta0`) change depending on USB detection order — `fix-phy-bindings` (Phase 7b) re-resolves them at boot from stable UCI radio paths
 - OMR filesystem can go read-only — always `mount -o remount,rw /` before writing
-- OMR uses `ash` shell — no bashisms (no `{a,b}`, no arrays)
-- DNS issues after reboot: `/etc/init.d/unbound restart`
+- OMR uses `ash` shell — no bashisms (no `{a,b}`, no arrays); use `pidof` instead of `pgrep -x` (BusyBox `pgrep -x` does not match like GNU)
+- DNS issues after reboot: `/etc/init.d/unbound restart` (or just rely on service-monitor to do it)
+- After `ifup wanX`, OMR may reset `peerdns` to `0` — re-enable it with `uci set network.wanX.peerdns=1 && uci commit network && ifup wanX`
+- VPS NAT for the Glorytun TCP tunnel must masquerade `10.255.255.0/30` → `eth0`. With Shorewall disabled in the LXC, persist the rule with `iptables-save > /etc/iptables.rules` (loaded by `/etc/network/if-up.d/iptables`)
