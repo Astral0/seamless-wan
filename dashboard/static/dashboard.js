@@ -8,8 +8,19 @@ let wanPublicIps = {}; // cached public IPs per WAN
 let lastWanIps = {}; // track internal IPs to detect changes
 let wanProbes = {}; // wan-monitor probe results: name -> {status, failures, ...}
 let prevThroughput = null; // last /proc/net/dev snapshot
-const TP_HISTORY_SIZE = 30; // 30 samples * 2s = 60s window
+const TP_HISTORY_SIZE = 60; // 60 samples * 2s = 2 min window
 const tpHistory = {}; // name -> [{rx_bps, tx_bps}, ...]
+const tpVisible = {}; // name -> bool (default: visible if classified)
+const TP_COLORS = [
+    "#2563eb", // blue
+    "#dc2626", // red
+    "#059669", // green
+    "#d97706", // amber
+    "#7c3aed", // violet
+    "#0891b2", // cyan
+    "#db2777", // pink
+    "#65a30d", // lime
+];
 
 // --- API Client ---
 
@@ -196,36 +207,57 @@ function formatRate(bps) {
     return v >= 100 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`;
 }
 
-function areaChart(samples, height) {
-    // OpenVPN-style filled area chart with overlaid RX (yellow) and TX (orange).
-    const W = 320, H = height || 70;
-    if (!samples || samples.length < 2) {
-        return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"></svg>`;
+// Mirror chart: RX above the X axis (top half), TX below (bottom half).
+// Each visible interface gets its own colored line for both RX and TX.
+function mirrorChart(visibleSeries, height) {
+    const W = 800, H = height || 240;
+    const MID = H / 2;
+    if (!visibleSeries || visibleSeries.length === 0) {
+        return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
+            style="background:#fafaf9;border-radius:6px"></svg>`;
     }
-    const rxs = samples.map(s => s.rx_bps);
-    const txs = samples.map(s => s.tx_bps);
-    const max = Math.max(1, ...rxs, ...txs);
+
+    // Find the global max across all visible series for both RX and TX
+    let maxRx = 1, maxTx = 1;
+    visibleSeries.forEach(s => {
+        s.hist.forEach(p => {
+            if (p.rx_bps > maxRx) maxRx = p.rx_bps;
+            if (p.tx_bps > maxTx) maxTx = p.tx_bps;
+        });
+    });
     const step = W / (TP_HISTORY_SIZE - 1);
 
-    const buildPath = (vals) => {
-        const padded = Array(TP_HISTORY_SIZE - vals.length).fill(0).concat(vals);
-        const pts = padded.map((v, i) =>
-            `${(i * step).toFixed(1)},${(H - (v / max) * (H - 2) - 1).toFixed(1)}`
-        );
-        // close the path to the bottom for filled area
-        return `M0,${H} L${pts.join(" L")} L${W},${H} Z`;
+    const polyline = (hist, accessor, max, isTx, color) => {
+        const padded = Array(TP_HISTORY_SIZE - hist.length).fill(0).concat(hist.map(accessor));
+        const pts = padded.map((v, i) => {
+            const x = (i * step).toFixed(1);
+            const offset = (v / max) * (MID - 4);
+            const y = isTx ? (MID + offset).toFixed(1) : (MID - offset).toFixed(1);
+            return `${x},${y}`;
+        }).join(" ");
+        return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" />`;
     };
+
+    const lines = visibleSeries.map(s => `
+        ${polyline(s.hist, p => p.rx_bps, maxRx, false, s.color)}
+        ${polyline(s.hist, p => p.tx_bps, maxTx, true,  s.color)}
+    `).join("");
 
     return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}"
             preserveAspectRatio="none"
-            style="display:block;background:#fafaf9;border-radius:4px">
-        <path d="${buildPath(rxs)}" fill="#fbbf24" fill-opacity="0.85" />
-        <path d="${buildPath(txs)}" fill="#ea580c" fill-opacity="0.65" />
-        <text x="6" y="14" font-size="11" font-family="monospace"
-              fill="#6b7280">${formatRate(max)}</text>
-        <text x="6" y="${H - 4}" font-size="11" font-family="monospace"
-              fill="#6b7280">0</text>
+            style="display:block;background:#fafaf9;border-radius:6px">
+        <line x1="0" y1="${MID}" x2="${W}" y2="${MID}" stroke="#d1d5db" stroke-width="1" />
+        <text x="6" y="14"          font-size="11" font-family="monospace" fill="#6b7280">↓ ${formatRate(maxRx)}</text>
+        <text x="6" y="${MID - 4}"  font-size="11" font-family="monospace" fill="#6b7280">0</text>
+        <text x="6" y="${MID + 14}" font-size="11" font-family="monospace" fill="#6b7280">0</text>
+        <text x="6" y="${H - 6}"    font-size="11" font-family="monospace" fill="#6b7280">↑ ${formatRate(maxTx)}</text>
+        ${lines}
     </svg>`;
+}
+
+function toggleSeries(name) {
+    tpVisible[name] = !tpVisible[name];
+    renderThroughput(prevThroughput ? prevThroughput.interfaces : {});
 }
 
 async function pollThroughput() {
@@ -278,64 +310,61 @@ function renderThroughput(interfaces) {
     const grid = document.getElementById("throughput-grid");
     if (!grid) return;
 
-    // Group interfaces by role
+    // Build the series list. Order: tunnel, WAN total, each WAN, LAN/AP.
     const groups = { wan: [], tunnel: [], lan: [] };
-    for (const name of Object.keys(interfaces)) {
+    for (const name of Object.keys(interfaces || {})) {
         const role = classifyInterface(name);
         if (!role) continue;
         groups[role.group].push({ name, role, hist: tpHistory[name] || [] });
     }
 
-    const renderCard = (label, sublabel, hist, isHero) => {
-        const last = latestSample(hist);
-        const chartH = isHero ? 110 : 70;
-        const numClass = isHero ? "font-size:22px" : "font-size:16px";
-        return `<div style="margin-bottom:14px;padding:12px;background:#fff;border:1px solid var(--border);border-radius:6px">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-                <strong style="${isHero ? "font-size:15px" : ""}">${label}</strong>
-                <span style="color:var(--text-muted);font-size:11px;font-family:monospace">${sublabel}</span>
-            </div>
-            ${areaChart(hist, chartH)}
-            <div style="display:flex;justify-content:space-around;margin-top:10px">
-                <div style="text-align:center">
-                    <div style="font-size:11px;color:var(--text-muted);letter-spacing:.5px">BYTES IN</div>
-                    <div style="${numClass};font-weight:700;color:#d97706;font-variant-numeric:tabular-nums">
-                        &darr; ${formatRate(last.rx_bps)}
-                    </div>
-                </div>
-                <div style="text-align:center">
-                    <div style="font-size:11px;color:var(--text-muted);letter-spacing:.5px">BYTES OUT</div>
-                    <div style="${numClass};font-weight:700;color:#ea580c;font-variant-numeric:tabular-nums">
-                        &uarr; ${formatRate(last.tx_bps)}
-                    </div>
-                </div>
-            </div>
-        </div>`;
-    };
-
-    let html = "";
-
-    // Hero: tunnel (it's the aggregated traffic the user actually cares about)
+    const series = [];
     if (groups.tunnel.length > 0) {
         const t = groups.tunnel[0];
-        html += renderCard("Tunnel", t.name, t.hist, true);
+        series.push({ key: t.name, label: "Tunnel", sublabel: t.name, hist: t.hist });
     }
-
-    // WAN total + per-WAN
     if (groups.wan.length > 1) {
-        const totalHist = sumHistories(groups.wan.map(w => w.hist));
-        html += renderCard("WAN total", `${groups.wan.length} interfaces`, totalHist, false);
+        series.push({
+            key: "__wan_total",
+            label: "WAN total",
+            sublabel: `${groups.wan.length} ifs`,
+            hist: sumHistories(groups.wan.map(w => w.hist)),
+        });
     }
-    groups.wan.forEach(w => {
-        html += renderCard(w.role.label, w.name, w.hist, false);
+    groups.wan.forEach(w => series.push({ key: w.name, label: w.role.label, sublabel: w.name, hist: w.hist }));
+    groups.lan.forEach(w => series.push({ key: w.name, label: w.role.label, sublabel: w.name, hist: w.hist }));
+
+    // Assign stable colors (idx in series list) and default visibility:
+    // Tunnel + WAN total visible, individual interfaces hidden by default.
+    series.forEach((s, i) => {
+        s.color = TP_COLORS[i % TP_COLORS.length];
+        if (tpVisible[s.key] === undefined) {
+            tpVisible[s.key] = (s.key === "__wan_total" || s.label === "Tunnel");
+        }
     });
 
-    // LAN / AP last
-    groups.lan.forEach(w => {
-        html += renderCard(w.role.label, w.name, w.hist, false);
-    });
+    const visibleSeries = series.filter(s => tpVisible[s.key]);
+    const chart = mirrorChart(visibleSeries, 240);
 
-    grid.innerHTML = html || '<div class="status-label">No interface data yet.</div>';
+    // Toggle buttons + per-series current rate
+    const buttons = series.map(s => {
+        const last = latestSample(s.hist);
+        const on = tpVisible[s.key];
+        return `<button onclick="toggleSeries('${s.key}')" style="
+            display:inline-flex;align-items:center;gap:6px;
+            padding:5px 10px;margin:3px;border:1px solid ${on ? s.color : "var(--border)"};
+            background:${on ? s.color + "18" : "#fff"};
+            color:${on ? s.color : "var(--text-muted)"};
+            border-radius:14px;cursor:pointer;font-size:12px">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+                background:${s.color};opacity:${on ? 1 : 0.3}"></span>
+            <strong>${s.label}</strong>
+            <span style="opacity:0.7;font-family:monospace">↓${formatRate(last.rx_bps)} ↑${formatRate(last.tx_bps)}</span>
+        </button>`;
+    }).join("");
+
+    grid.innerHTML = `${chart}
+        <div style="margin-top:12px;display:flex;flex-wrap:wrap">${buttons}</div>`;
 }
 
 function toggleHistory() {
