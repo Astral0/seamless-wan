@@ -227,20 +227,23 @@ function mirrorChart(visibleSeries, height) {
     });
     const step = W / (TP_HISTORY_SIZE - 1);
 
-    const polyline = (hist, accessor, max, isTx, color) => {
+    const seriesPaths = (hist, accessor, max, isTx, color) => {
         const padded = Array(TP_HISTORY_SIZE - hist.length).fill(0).concat(hist.map(accessor));
         const pts = padded.map((v, i) => {
             const x = (i * step).toFixed(1);
             const offset = (v / max) * (MID - 4);
             const y = isTx ? (MID + offset).toFixed(1) : (MID - offset).toFixed(1);
-            return `${x},${y}`;
-        }).join(" ");
-        return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" />`;
+            return { x, y };
+        });
+        const lineD = "M" + pts.map(p => `${p.x},${p.y}`).join(" L");
+        const fillD = `M0,${MID} L${pts.map(p => `${p.x},${p.y}`).join(" L")} L${W},${MID} Z`;
+        return `<path d="${fillD}" fill="${color}" fill-opacity="0.18" />
+                <path d="${lineD}" fill="none" stroke="${color}" stroke-width="1.6" />`;
     };
 
     const lines = visibleSeries.map(s => `
-        ${polyline(s.hist, p => p.rx_bps, maxRx, false, s.color)}
-        ${polyline(s.hist, p => p.tx_bps, maxTx, true,  s.color)}
+        ${seriesPaths(s.hist, p => p.rx_bps, maxRx, false, s.color)}
+        ${seriesPaths(s.hist, p => p.tx_bps, maxTx, true,  s.color)}
     `).join("");
 
     return `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}"
