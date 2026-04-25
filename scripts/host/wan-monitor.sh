@@ -13,6 +13,12 @@ RECOVER_AFTER="${RECOVER_AFTER:-3}"
 STATE_FILE="${STATE_FILE:-/tmp/wan-monitor.json}"
 WORK_DIR="${WORK_DIR:-/tmp/wan-monitor}"
 
+# Auto-launch captive-firefox in noVNC when a WAN goes internet -> captive.
+# Set to "0" to disable. Cooldown prevents launch loops.
+AUTO_CAPTIVE="${AUTO_CAPTIVE:-1}"
+CAPTIVE_COOLDOWN="${CAPTIVE_COOLDOWN:-300}"  # 5 min between auto-launches
+CAPTIVE_SCRIPT="${CAPTIVE_SCRIPT:-/mnt/data/usr/local/bin/captive-firefox}"
+
 mkdir -p "$WORK_DIR"
 
 # Probe one interface. Echoes one of:
@@ -105,7 +111,23 @@ while true; do
         prev=$(read_or "$WORK_DIR/status-$w" "")
         if [ "$prev" != "$result" ]; then
             echo "$now" > "$WORK_DIR/since-$w"
-            logger -t wan-monitor "$w: $prev -> $result"
+            logger -t wan-monitor "event: $w transitioned $prev -> $result"
+
+            # Auto-launch captive Firefox on internet -> captive transition.
+            # Cooldown stops launch loops if the portal flaps quickly.
+            if [ "$AUTO_CAPTIVE" = "1" ] && [ "$prev" = "internet" ] && [ "$result" = "captive" ]; then
+                last_launch=$(read_or "$WORK_DIR/last-captive-launch" 0)
+                if [ "$((now - last_launch))" -ge "$CAPTIVE_COOLDOWN" ]; then
+                    if [ -x "$CAPTIVE_SCRIPT" ]; then
+                        logger -t wan-monitor "auto-launching captive-firefox for $w (portal expired)"
+                        chroot /mnt/data /usr/local/bin/captive-firefox >/dev/null 2>&1 &
+                        echo "$now" > "$WORK_DIR/last-captive-launch"
+                    fi
+                else
+                    remaining=$((CAPTIVE_COOLDOWN - (now - last_launch)))
+                    logger -t wan-monitor "captive on $w, but auto-launch cooldown active (${remaining}s left)"
+                fi
+            fi
         fi
         echo "$result" > "$WORK_DIR/status-$w"
 

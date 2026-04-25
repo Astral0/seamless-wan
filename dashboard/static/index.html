@@ -83,6 +83,17 @@
             </div>
         </div>
 
+        <!-- History / Recent Events (collapsible) -->
+        <div class="card">
+            <h2 style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleHistory()">
+                <span>Recent Events</span>
+                <span id="history-toggle" style="font-size:14px;color:var(--text-muted)">show</span>
+            </h2>
+            <div id="history-list" style="display:none;max-height:300px;overflow-y:auto;font-size:12px;font-family:monospace">
+                <div class="status-label">Loading...</div>
+            </div>
+        </div>
+
         <!-- Tunnel -->
         <div class="card">
             <h2>Tunnel</h2>

@@ -175,6 +175,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ))
             return
 
+        # GET /api/events — recent monitoring events (transitions, restarts, etc.)
+        if path == "/api/events":
+            self.send_json(api_success(
+                host_commands.cached("api_events", 5.0, host_commands.get_events)
+            ))
+            return
+
         # GET /api/roaming/status
         if path == "/api/roaming/status":
             status = host_commands.get_roaming_status()

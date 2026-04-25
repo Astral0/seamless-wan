@@ -163,6 +163,57 @@ async function pollStatus() {
     dot.style.background = "#22c55e";
 }
 
+function toggleHistory() {
+    const list = document.getElementById("history-list");
+    const toggle = document.getElementById("history-toggle");
+    if (!list) return;
+    if (list.style.display === "none") {
+        list.style.display = "";
+        toggle.textContent = "hide";
+        loadHistory();
+    } else {
+        list.style.display = "none";
+        toggle.textContent = "show";
+    }
+}
+
+async function loadHistory() {
+    const resp = await api("GET", "/api/events");
+    const list = document.getElementById("history-list");
+    if (!list) return;
+    if (!resp || !resp.ok || !resp.data) {
+        list.innerHTML = '<div class="status-label">Failed to load events.</div>';
+        return;
+    }
+    const events = resp.data.events || [];
+    if (events.length === 0) {
+        list.innerHTML = '<div class="status-label">No recent events.</div>';
+        return;
+    }
+    const tagColor = {
+        "wan-monitor":     "#2563eb",
+        "service-monitor": "#7c3aed",
+        "captive-firefox": "#d97706",
+        "captive-routing": "#0891b2",
+        "fix-phy":         "#059669",
+    };
+    // Most recent first
+    list.innerHTML = events.slice().reverse().map(e => {
+        const c = tagColor[e.tag] || "#6b7280";
+        return `<div style="padding:4px 6px;border-bottom:1px solid var(--border)">
+            <span style="color:var(--text-muted)">${e.date}</span>
+            <span style="color:${c};font-weight:600;margin-left:6px">${e.tag}</span>
+            <span style="margin-left:6px">${escapeHtml(e.message)}</span>
+        </div>`;
+    }).join("");
+}
+
+function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+}
+
 async function loadAlerts() {
     const resp = await api("GET", "/api/alerts");
     const banner = document.getElementById("alerts-banner");

@@ -499,6 +499,49 @@ def get_service_probes() -> dict:
         return {"timestamp": 0, "services": []}
 
 
+def get_events(limit: int = 100) -> dict:
+    """Return recent monitoring events from syslog (logread).
+
+    Filters lines tagged wan-monitor / service-monitor / captive-firefox /
+    captive-routing / fix-phy. Only meaningful events (transitions, restarts,
+    auto-actions) — not the periodic probe noise.
+    """
+    # logread output: "Sat Apr 25 16:30:42 2026 user.notice TAG: message"
+    r = run_ssh(
+        "logread 2>/dev/null | grep -E "
+        "'wan-monitor:|service-monitor:|captive-firefox:|captive-routing:|fix-phy:' | "
+        "tail -n " + str(limit),
+        timeout=8,
+    )
+    events: list[dict] = []
+    if r.ok and r.stdout:
+        for line in r.stdout.splitlines():
+            # Split on ": " (after the tag) to get the message
+            # Date is the first 24 chars: "Sat Apr 25 16:30:42 2026"
+            try:
+                # find " <facility.level> "
+                idx = line.find(" user.")
+                if idx < 0:
+                    idx = line.find(" daemon.")
+                if idx < 0:
+                    continue
+                date_part = line[:idx].strip()
+                rest = line[idx:].strip()
+                # rest = "user.notice tag: message"
+                tag_msg = rest.split(" ", 1)[1] if " " in rest else rest
+                if ":" not in tag_msg:
+                    continue
+                tag, message = tag_msg.split(":", 1)
+                events.append({
+                    "date": date_part,
+                    "tag": tag.strip(),
+                    "message": message.strip(),
+                })
+            except (ValueError, IndexError):
+                continue
+    return {"events": events}
+
+
 def get_alerts() -> dict:
     """Aggregate alerts from wan-monitor, service-monitor and system flags.
 
