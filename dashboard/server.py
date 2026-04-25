@@ -161,6 +161,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(api_success(host_commands.get_wan_probes()))
             return
 
+        # GET /api/lan — LAN networks (eth0, OMR-WiFi) and connected clients
+        if path == "/api/lan":
+            self.send_json(api_success(
+                host_commands.cached("api_lan", 5.0, host_commands.get_lan_status)
+            ))
+            return
+
         # GET /api/roaming/status
         if path == "/api/roaming/status":
             status = host_commands.get_roaming_status()

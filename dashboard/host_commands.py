@@ -300,6 +300,181 @@ def _refresh_wan_public_ips() -> dict[str, dict]:
     return result
 
 
+def get_lan_status() -> dict:
+    """Return LAN networks (eth0, wifi AP) and their connected clients.
+
+    Output: {"networks": [{"name", "device", "subnet", "ssid", "clients": [...]}]}
+    Client: {"mac", "ip", "hostname", "expires", "signal", "iface"}
+    """
+    r = run_ssh(
+        r"""
+        echo '#NETWORKS'
+        # Discover lan-like interfaces (anything not wan*) that have an ipv4 addr
+        for iface in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1 | grep -v '^wan' | grep -v '^loopback' | grep -v '^omr'); do
+            dev=$(uci get network.$iface.device 2>/dev/null)
+            [ -z "$dev" ] && dev=$(ubus call network.interface.$iface status 2>/dev/null | jsonfilter -e '@.l3_device')
+            [ -z "$dev" ] && continue
+            ip=$(ip -4 addr show "$dev" 2>/dev/null | awk '/inet /{print $2; exit}')
+            [ -z "$ip" ] && continue
+            ssid=""
+            case "$dev" in
+                phy*-ap*)
+                    # Find the SSID for this AP interface via UCI by scanning wifi-iface entries
+                    for w in $(uci show wireless 2>/dev/null | grep "=wifi-iface" | cut -d. -f2 | cut -d= -f1); do
+                        net=$(uci get wireless.$w.network 2>/dev/null)
+                        [ "$net" = "$iface" ] && ssid=$(uci get wireless.$w.ssid 2>/dev/null) && break
+                    done
+                    ;;
+            esac
+            echo "$iface|$dev|$ip|$ssid"
+        done
+
+        echo '#LEASES'
+        cat /tmp/dhcp.leases 2>/dev/null
+
+        echo '#WIFI_STATIONS'
+        for ifname in $(ls /sys/class/net 2>/dev/null | grep '\-ap'); do
+            iw dev "$ifname" station dump 2>/dev/null | awk -v i="$ifname" '
+                /^Station/ {mac=$2; signal="";  conn=""}
+                /signal:/ {signal=$2}
+                /connected time:/ {conn=$3}
+                /tx bytes:/ {print i"|"mac"|"signal"|"conn}
+            '
+        done
+
+        echo '#NEIGH'
+        ip neigh show 2>/dev/null
+        """,
+        timeout=10,
+    )
+
+    networks = []
+    leases_by_mac: dict[str, dict] = {}
+    wifi_stations: list[dict] = []
+    neigh: list[dict] = []
+
+    if r.ok:
+        section = None
+        for line in r.stdout.splitlines():
+            line = line.rstrip()
+            if not line:
+                continue
+            if line == "#NETWORKS":
+                section = "networks"
+                continue
+            if line == "#LEASES":
+                section = "leases"
+                continue
+            if line == "#WIFI_STATIONS":
+                section = "wifi"
+                continue
+            if line == "#NEIGH":
+                section = "neigh"
+                continue
+
+            if section == "networks":
+                parts = line.split("|")
+                if len(parts) >= 3:
+                    networks.append({
+                        "name": parts[0],
+                        "device": parts[1],
+                        "subnet": parts[2],
+                        "ssid": parts[3] if len(parts) > 3 else "",
+                        "clients": [],
+                    })
+            elif section == "leases":
+                parts = line.split()
+                if len(parts) >= 4:
+                    leases_by_mac[parts[1].lower()] = {
+                        "expires": int(parts[0]) if parts[0].isdigit() else 0,
+                        "mac": parts[1].lower(),
+                        "ip": parts[2],
+                        "hostname": parts[3] if parts[3] != "*" else "",
+                    }
+            elif section == "wifi":
+                parts = line.split("|")
+                if len(parts) >= 4:
+                    wifi_stations.append({
+                        "iface": parts[0],
+                        "mac": parts[1].lower(),
+                        "signal": parts[2],
+                        "connected_seconds": int(parts[3]) if parts[3].isdigit() else 0,
+                    })
+            elif section == "neigh":
+                # "192.168.100.42 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
+                parts = line.split()
+                if len(parts) >= 5 and "lladdr" in parts:
+                    idx = parts.index("lladdr")
+                    if idx + 1 < len(parts):
+                        ip_addr = parts[0]
+                        dev = parts[2] if len(parts) > 2 and parts[1] == "dev" else ""
+                        state = parts[-1]
+                        neigh.append({
+                            "ip": ip_addr,
+                            "dev": dev,
+                            "mac": parts[idx + 1].lower(),
+                            "state": state,
+                        })
+
+    # Helper: figure out which network a device belongs to
+    def network_for_device(dev: str) -> dict | None:
+        for n in networks:
+            if n["device"] == dev:
+                return n
+        return None
+
+    # 1) Add DHCP leases as clients (preferred — has hostname)
+    seen_macs: dict[tuple[str, str], dict] = {}  # (network_name, mac) -> client
+    for n in neigh:
+        if n["state"] in ("FAILED", "INCOMPLETE"):
+            continue
+        net = network_for_device(n["dev"])
+        if net is None:
+            continue
+        lease = leases_by_mac.get(n["mac"])
+        client = {
+            "mac": n["mac"],
+            "ip": n["ip"],
+            "hostname": lease["hostname"] if lease else "",
+            "expires": lease["expires"] if lease else 0,
+            "iface": n["dev"],
+            "signal": "",
+            "connected_seconds": 0,
+        }
+        # Merge wifi station info if present
+        for s in wifi_stations:
+            if s["mac"] == n["mac"] and s["iface"] == n["dev"]:
+                client["signal"] = s["signal"]
+                client["connected_seconds"] = s["connected_seconds"]
+                break
+        seen_macs[(net["name"], n["mac"])] = client
+        net["clients"].append(client)
+
+    # 2) Add WiFi stations not already in neigh (might be in different state)
+    for s in wifi_stations:
+        net = network_for_device(s["iface"])
+        if net is None:
+            continue
+        if (net["name"], s["mac"]) in seen_macs:
+            continue
+        lease = leases_by_mac.get(s["mac"])
+        net["clients"].append({
+            "mac": s["mac"],
+            "ip": lease["ip"] if lease else "",
+            "hostname": lease["hostname"] if lease else "",
+            "expires": lease["expires"] if lease else 0,
+            "iface": s["iface"],
+            "signal": s["signal"],
+            "connected_seconds": s["connected_seconds"],
+        })
+
+    # Sort clients by IP for stable display
+    for n in networks:
+        n["clients"].sort(key=lambda c: tuple(int(x) if x.isdigit() else 0 for x in c["ip"].split(".")) if c["ip"] else (999,))
+
+    return {"networks": networks}
+
+
 def get_wan_probes() -> dict:
     """Return wan-monitor probe status from /tmp/wan-monitor.json on the host."""
     r = run_ssh("cat /tmp/wan-monitor.json 2>/dev/null", timeout=5)

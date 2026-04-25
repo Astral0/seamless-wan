@@ -154,11 +154,57 @@ async function pollStatus() {
 
     if (ipChanged) loadWanPublicIps();
     loadWanProbes();
+    loadLan();
 
     // Tunnel
     renderTunnel(d.tunnel);
 
     dot.style.background = "#22c55e";
+}
+
+async function loadLan() {
+    const resp = await api("GET", "/api/lan");
+    if (!resp || !resp.ok || !resp.data) return;
+    const grid = document.getElementById("lan-grid");
+    if (!grid) return;
+    const nets = resp.data.networks || [];
+    if (nets.length === 0) {
+        grid.innerHTML = '<div class="status-label">No LAN networks detected.</div>';
+        return;
+    }
+    const fmtDuration = s => {
+        if (!s) return "";
+        if (s < 60) return s + "s";
+        if (s < 3600) return Math.floor(s / 60) + "m";
+        return Math.floor(s / 3600) + "h" + Math.floor((s % 3600) / 60) + "m";
+    };
+    grid.innerHTML = nets.map(n => {
+        const title = n.ssid ? `${n.name} <span style="color:var(--text-muted)">(${n.ssid})</span>` : n.name;
+        const rows = (n.clients || []).map(c => {
+            const sig = c.signal ? `<span class="badge badge-link" style="margin-left:6px">${c.signal} dBm</span>` : "";
+            const conn = c.connected_seconds ? `<span style="color:var(--text-muted);margin-left:6px">${fmtDuration(c.connected_seconds)}</span>` : "";
+            const host = c.hostname || '<em style="color:var(--text-muted)">-</em>';
+            return `<tr>
+                <td>${host}</td>
+                <td>${c.ip || "-"}</td>
+                <td><code>${c.mac}</code></td>
+                <td>${sig}${conn}</td>
+            </tr>`;
+        }).join("");
+        const tableBody = rows || `<tr><td colspan="4" style="color:var(--text-muted)">No clients connected.</td></tr>`;
+        return `<div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+                <strong>${title}</strong>
+                <span style="color:var(--text-muted);font-size:12px">${n.device} &middot; ${n.subnet} &middot; ${(n.clients||[]).length} client${(n.clients||[]).length !== 1 ? "s" : ""}</span>
+            </div>
+            <table class="lan-table" style="width:100%;font-size:13px;border-collapse:collapse">
+                <thead><tr style="text-align:left;color:var(--text-muted);font-weight:normal;border-bottom:1px solid var(--border)">
+                    <th style="padding:4px 8px">Hostname</th><th style="padding:4px 8px">IP</th><th style="padding:4px 8px">MAC</th><th style="padding:4px 8px">Info</th>
+                </tr></thead>
+                <tbody>${tableBody}</tbody>
+            </table>
+        </div>`;
+    }).join("");
 }
 
 async function loadWanProbes() {
