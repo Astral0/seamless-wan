@@ -1,31 +1,37 @@
 #!/bin/sh
-# seamless-wan: UID-based policy routing for captive portal user
-# When wan2 comes up, add ip rule so user "captive" (UID 15) traffic
-# goes directly through WiFi (bypassing the VPN tunnel).
-[ "$INTERFACE" = "wan2" ] && [ "$ACTION" = "ifup" ] && {
-    TABLE=$(uci get network.wan2.ip4table 2>/dev/null)
-    [ -z "$TABLE" ] && exit 0
-    DEVICE=$(uci get network.wan2.device 2>/dev/null)
-    [ -z "$DEVICE" ] && exit 0
+# seamless-wan: UID-based policy routing for captive portal user.
+# Reacts to any WAN ifup, adds an `ip rule` so the `captive` user (UID 15)
+# is routed via the WAN-specific table (bypassing the VPN tunnel), and
+# writes the WAN gateway to /mnt/data/tmp/captive-gw so the chroot's
+# captive-firefox launcher can use it as a DNS resolver (bypasses the
+# host dnsmasq + its rebind protection that breaks captive portals).
+case "$INTERFACE" in
+    wan*)
+        [ "$ACTION" = "ifup" ] || exit 0
+        TABLE=$(uci -q get network.$INTERFACE.ip4table)
+        [ -z "$TABLE" ] && exit 0
+        DEVICE=$(ubus call network.interface.$INTERFACE status 2>/dev/null | jsonfilter -e "@.device" 2>/dev/null)
+        [ -z "$DEVICE" ] && exit 0
 
-    # Add ip rule for captive user
-    ip rule show | grep -q 'uidrange 15-15' || {
-        ip rule add uidrange 15-15 table $TABLE prio 5000
-        logger -t captive-routing "Added ip rule for uid 15 -> table $TABLE"
-    }
+        # Add ip rule for captive user (UID 15) if missing
+        ip rule show | grep -q "uidrange 15-15" || {
+            ip rule add uidrange 15-15 table $TABLE prio 5000
+            logger -t captive-routing "Added ip rule for uid 15 -> table $TABLE"
+        }
 
-    # Wait for gateway to be available, then add default route
-    tries=0
-    while [ $tries -lt 10 ]; do
-        GW=$(ip route show dev $DEVICE | grep default | awk '{print $3}' | head -1)
-        if [ -n "$GW" ]; then
-            ip route show table $TABLE | grep -q default || {
-                ip route add default via $GW dev $DEVICE table $TABLE
-                logger -t captive-routing "Added default route via $GW dev $DEVICE table $TABLE"
-            }
-            break
-        fi
-        tries=$((tries + 1))
-        sleep 2
-    done
-}
+        # Wait for the WAN-specific default route, then expose its gateway
+        # to the chroot via /mnt/data/tmp/captive-gw (used by captive-firefox).
+        tries=0
+        while [ $tries -lt 10 ]; do
+            GW=$(ip route show table $TABLE default 2>/dev/null | awk '/via/ {print $3; exit}')
+            if [ -n "$GW" ]; then
+                mkdir -p /mnt/data/tmp 2>/dev/null
+                echo "$GW" > /mnt/data/tmp/captive-gw
+                logger -t captive-routing "WAN gateway $GW (table $TABLE, $DEVICE) written to captive-gw"
+                break
+            fi
+            tries=$((tries + 1))
+            sleep 2
+        done
+        ;;
+esac
