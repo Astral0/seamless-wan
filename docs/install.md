@@ -165,11 +165,21 @@ wifi reload radioX && ifup wan4
 
 **Never bridge eth0** (`br-lan`) — this breaks WAN macvlan interfaces.
 
+> **AR9271 gotcha — do NOT set `country` here.** The AR9271 EEPROM ships
+> with `regdomain=0x0` (default-US). When UCI sets a different country
+> (e.g. `FR`), the kernel keeps the EEPROM US regulatory but hostapd
+> tries to apply FR settings — the AP gets stuck in
+> `UNINITIALIZED→COUNTRY_UPDATE` and logs `Failed to set beacon
+> parameters` continuously. Beacons aren't emitted, so passive WiFi
+> scans on phones won't see the SSID. Pinning to a channel that is
+> legal in both regulations (1–11) and **omitting** `country` keeps the
+> radio on the EEPROM default and lets hostapd reach `AP-ENABLED`.
+
 ```bash
 # Wireless AP config (adapt radio number)
 uci set wireless.radio2.disabled='0'
-uci set wireless.radio2.channel='auto'
-uci set wireless.radio2.country='FR'
+uci set wireless.radio2.channel='6'   # explicit (legal in US & FR)
+uci -q delete wireless.radio2.country
 uci set wireless.default_radio2.ssid='OMR-WiFi'
 uci set wireless.default_radio2.encryption='psk2'
 uci set wireless.default_radio2.key='YOUR_WIFI_AP_KEY'
@@ -290,6 +300,7 @@ cp scripts/host/wifi-roaming.sh /opt/
 cp scripts/host/power-monitor.sh /opt/
 cp scripts/host/start-novnc.sh /opt/
 cp scripts/host/alpine-enter.sh /opt/
+cp scripts/host/remap-radios.sh /opt/
 cp scripts/host/claude-launcher.sh /opt/claude
 chmod +x /opt/*
 
@@ -391,6 +402,78 @@ Run these checks to verify everything works:
 12. **wan-monitor**: `cat /tmp/wan-monitor.json` → each WAN should be `internet` or `captive`
 13. **service-monitor**: `cat /tmp/service-monitor.json` → all 4 services `running`
 14. **Power monitor**: `logread | grep power-monitor`
+
+## Troubleshooting
+
+### `OMR-WiFi` SSID is not visible on phones
+
+**Symptom**: `iw dev` shows `phy{N}-ap0 ssid OMR-WiFi`, but the SSID is
+invisible on phones (or only visible from devices that probe actively).
+
+**Cause**: country/regdomain conflict on the AR9271 — see the gotcha box
+in Phase 5. Look for repeating `hostapd: Failed to set beacon
+parameters` in `logread` and `TX 0 packets` in `ip -s link show
+phy{N}-ap0` to confirm.
+
+**Fix**:
+
+```sh
+uci -q delete wireless.radio2.country
+uci set wireless.radio2.channel='6'
+uci commit wireless
+wifi down radio2 && sleep 3 && wifi up radio2
+```
+
+If the radio is in a bad state after a wifi reload, soft-reset the USB
+device and re-run the remap:
+
+```sh
+echo 0 > /sys/bus/usb/devices/1-1.4/authorized   # adapt path: lsusb tree
+sleep 2
+echo 1 > /sys/bus/usb/devices/1-1.4/authorized
+sleep 6
+/opt/remap-radios.sh
+```
+
+### A USB WiFi dongle was moved to another port — radio is now missing
+
+`fix-phy-bindings.sh` matches by stable UCI `wireless.radioN.path`, so
+it can't follow a dongle that moved to a different USB hub port. The
+new helper `remap-radios.sh` matches by **kernel driver** instead
+(`brcmfmac` / `mt7601u` / `ath9k_htc`) and updates the UCI path to the
+current sysfs location, then calls `fix-phy-bindings.sh` to rebind
+WAN devices. Run it from the host:
+
+```sh
+/opt/remap-radios.sh
+```
+
+Or click **Remap USB Dongles** in the dashboard. After the rewrite,
+`wifi reload` recreates `phy{N}-staX` interfaces with the right
+numbering and the duplicate auto-detected radios (e.g. `radio5`,
+created by OpenWrt's hotplug at the new path before our remap) are
+removed.
+
+### WiFi connect with wrong PSK reports success
+
+Older versions returned "connected" right after `wifi reload` because
+`iw dev link` reports `Connected to <MAC>` during 802.11 association,
+which happens **before** the WPA 4-way handshake. The fix in
+`wifi-roaming.sh do_connect` waits up to 25 s for an actual DHCP IP and
+greps `logread` for `WRONG_KEY` / `4-Way Handshake failed` for fast
+failure detection. Editing a known network now also calls
+`wifi-roaming.sh update-key` so the live UCI key gets refreshed and a
+reconnect is verified the same way.
+
+### Public IP shown empty on dashboard
+
+The dashboard fetches the public IP via `curl ifconfig.me`, which needs
+DNS. With the Glorytun tunnel down, OMR's `/etc/resolv.conf` is empty
+even though the WAN itself has internet. The dashboard now falls back
+to a direct-IP HTTP query: `nslookup ifconfig.me 8.8.8.8` (UDP/53 to
+Google DNS, doesn't depend on `/etc/resolv.conf`) → `curl -H 'Host:
+ifconfig.me' http://<resolved-IP>/`. No code change is required if you
+sync `dashboard/host_commands.py` from this repo.
 
 ## Important Notes
 

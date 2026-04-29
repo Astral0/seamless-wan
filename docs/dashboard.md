@@ -11,7 +11,8 @@ Lightweight web UI for monitoring and managing the seamless-wan router.
 - **Glorytun tunnel**: connection status, local/remote IPs
 - **LAN & Clients**: per-network table for `lan` (eth0) and `wifilan` (OMR-WiFi AP) showing connected clients (hostname / IP / MAC / signal+uptime for WiFi)
 - **Recent Events** (collapsible): last 100 monitoring events from `logread` filtered to `wan-monitor` / `service-monitor` / `captive-firefox` / `captive-routing` / `fix-phy`, colour-coded per tag
-- **WiFi roaming**: scan networks, connect/disconnect, manage known networks (CRUD), connect to unknown networks from scan results (auto-add + rollback on failure), auto/manual connect flag per network
+- **WiFi roaming**: scan networks, connect/disconnect, manage known networks (CRUD), connect to unknown networks from scan results (auto-add + rollback on failure), auto/manual connect flag per network. Connection verification waits for an actual DHCP-acquired IP so a wrong PSK fails fast (no false "connected" while wpa_supplicant is still retrying); editing a known network's password also re-applies it in UCI and reconnects when the SSID is the active one.
+- **USB Dongles**: "Remap USB Dongles" button to redetect WiFi dongles by kernel driver (brcmfmac / mt7601u / ath9k_htc) and rewrite UCI radio paths after physically moving them between USB ports. Removes duplicate radios auto-created by OpenWrt's hotplug.
 - **Services**: status and restart for novnc, wifi-roaming, power-monitor
 - **Quick links**: noVNC remote desktop, OMR LuCI admin
 
@@ -164,6 +165,7 @@ All endpoints are under `/api/` and require authentication (session cookie or Ba
 | DELETE | `/api/roaming/networks/{ssid}` | Delete a known network |
 | GET | `/api/services` | Service statuses |
 | POST | `/api/services/{name}/restart` | Restart a service |
+| POST | `/api/usb/remap` | Re-detect USB WiFi dongles by driver and rewrite UCI radio paths |
 
 ## Performance notes
 

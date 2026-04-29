@@ -17,6 +17,7 @@ A mobile multi-WAN toolkit for [OpenMPTCProuter](https://www.openmptcprouter.com
 - **Web dashboard** — Lightweight web UI showing system status, alerts banner with one-click action buttons (re-validate captive portal, restart WAN, restart service), real-time throughput chart with per-interface toggles (mirror chart RX/TX, 2 min window), connected LAN/AP clients, and a recent-events timeline
 - **Remote desktop** — noVNC-based remote access running in an Alpine Linux chroot (for captive portal auth and more)
 - **Stable WiFi bindings** — `fix-phy-bindings` service resolves `phyN` from stable UCI radio paths at boot so `network.wanX.device` doesn't break when USB devices renumber
+- **USB dongle remap** — `remap-radios.sh` (CLI + dashboard button) re-detects WiFi dongles by **kernel driver** (`brcmfmac` / `mt7601u` / `ath9k_htc`) after they're moved to another USB port, rewrites UCI radio paths and rebinds WAN devices in one shot
 - **Claude Code integration** — AI-powered router management with custom slash commands for automated configuration, diagnostics, and troubleshooting
 
 ## Hardware
@@ -86,6 +87,7 @@ seamless-wan/
 │   │   ├── wan-monitor.sh         # Per-WAN internet probe + auto-recovery
 │   │   ├── service-monitor.sh     # dnsmasq / glorytun / etc. watchdog
 │   │   ├── fix-phy-bindings.sh    # Stabilises phyN ↔ wanX bindings at boot
+│   │   ├── remap-radios.sh        # Re-detect USB WiFi dongles by driver, rewrite UCI paths
 │   │   ├── start-novnc.sh
 │   │   ├── alpine-enter.sh
 │   │   └── claude-launcher.sh
