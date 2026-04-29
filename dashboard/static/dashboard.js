@@ -696,6 +696,28 @@ async function doConnect(ssid) {
     }
 }
 
+async function doRemapUsb() {
+    const btn = document.getElementById("btn-remap-usb");
+    const out = document.getElementById("remap-output");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Remapping...';
+    out.style.display = "";
+    out.textContent = "Detecting USB dongles...";
+
+    const resp = await api("POST", "/api/usb/remap");
+    btn.disabled = false;
+    btn.textContent = "Remap USB Dongles";
+
+    if (resp && resp.ok) {
+        out.textContent = resp.data.output || "Done.";
+        // Refresh WAN status: bindings may have changed
+        setTimeout(pollStatus, 1500);
+        setTimeout(loadRoamingStatus, 1500);
+    } else {
+        out.textContent = "Remap failed: " + ((resp && resp.error) || "Unknown error");
+    }
+}
+
 async function doDisconnect() {
     if (!confirm("Disconnect from current WiFi?")) return;
     const resp = await api("POST", "/api/roaming/disconnect");

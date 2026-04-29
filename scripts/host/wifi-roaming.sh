@@ -74,12 +74,17 @@ do_status() {
     fi
     echo "Interface: $IFACE (radio=$RADIO)"
     LINK=$(iw dev "$IFACE" link 2>/dev/null)
-    if echo "$LINK" | grep -q "Connected"; then
+    if echo "$LINK" | grep -q "^Connected to"; then
         SSID=$(echo "$LINK" | grep 'SSID:' | awk '{print $2}')
         SIGNAL=$(echo "$LINK" | grep 'signal:' | awk '{print $2, $3}')
-        echo "Status: Connected to $SSID ($SIGNAL)"
-        IP=$(ip addr show dev "$IFACE" 2>/dev/null | grep 'inet ' | awk '{print $2}')
-        [ -n "$IP" ] && echo "IP: $IP"
+        IP=$(ip -4 addr show dev "$IFACE" 2>/dev/null | awk '/inet /{print $2; exit}')
+        if [ -n "$IP" ]; then
+            echo "Status: Connected to $SSID ($SIGNAL)"
+            echo "IP: $IP"
+        else
+            # Associated but no IP → still authenticating or wrong PSK
+            echo "Status: Authenticating to $SSID ($SIGNAL)"
+        fi
     else
         echo "Status: Not connected"
     fi
@@ -90,6 +95,69 @@ do_status() {
         [ -z "$flag" ] && flag="auto"
         echo "  [$prio] $ssid ($flag)"
     done
+}
+
+# Force a clean teardown of the current STA association before applying
+# new wireless config. Without this, `wifi reload` is racy: the kernel
+# can still report the old link + old DHCP IP for several seconds while
+# the new config is being applied, which causes our verifier to return
+# success based on stale state.
+do_force_disconnect() {
+    local IFACE="$1"
+    [ -z "$IFACE" ] && return 0
+    ip -4 addr flush dev "$IFACE" 2>/dev/null
+    iw dev "$IFACE" disconnect 2>/dev/null
+    # Give wpa_supplicant a moment to register the disconnect
+    sleep 1
+}
+
+# Wait until the interface has a stable connection AND a DHCP-acquired IP.
+# A bad PSK lets the device associate (link shows "Connected to MAC") but
+# wpa_supplicant disconnects after the 4-way handshake fails (typically
+# within ~5 s with reason 15 = 4WAY_HANDSHAKE_TIMEOUT). The interface then
+# flaps: associated → not connected → SSID temp-disabled → re-enabled →
+# associate again. Requiring a DHCP IP — which is impossible without a
+# successful handshake — filters this out reliably without depending on
+# wpa_cli (absent on OMR).
+#
+# We also require *stability*: the link must stay up for at least 2 s and
+# the IP must stay assigned, otherwise we keep waiting.
+do_wait_connected() {
+    local IFACE="$1"
+    local timeout="${2:-25}"
+    local elapsed=0
+    local last_state=""
+    local last_reason=""
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if iw dev "$IFACE" link 2>/dev/null | grep -q "^Connected to"; then
+            last_state="associated"
+            local ip
+            ip=$(ip -4 addr show dev "$IFACE" 2>/dev/null | awk '/inet /{print $2; exit}')
+            if [ -n "$ip" ]; then
+                echo "Connected with IP $ip"
+                return 0
+            fi
+        else
+            last_state="disconnected"
+        fi
+
+        # Quick failure detection: scan recent wpa_supplicant logs for
+        # an explicit "wrong PSK" or "auth failures" event on this iface.
+        if logread -l 50 2>/dev/null | grep -E "$IFACE.*(WRONG_KEY|pre-shared key may be incorrect|4-Way Handshake failed)" >/dev/null 2>&1; then
+            last_reason="wrong password"
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if [ -n "$last_reason" ]; then
+        echo "Connection failed: $last_reason"
+    elif [ "$last_state" = "associated" ]; then
+        echo "Associated but no IP (auth or DHCP failed)"
+    else
+        echo "Failed to associate (wrong password or out of range)"
+    fi
+    return 1
 }
 
 # Connect to a specific SSID
@@ -122,19 +190,56 @@ do_connect() {
         uci set "wireless.$UCI_SECTION.encryption=psk2"
         uci set "wireless.$UCI_SECTION.key=$KEY"
     fi
+    do_force_disconnect "$IFACE"
     uci commit wireless
     wifi reload "$RADIO"
-    sleep 3
+    sleep 2
 
-    # Check result
-    LINK=$(iw dev "$IFACE" link 2>/dev/null)
-    if echo "$LINK" | grep -q "Connected"; then
-        CONNECTED_SSID=$(echo "$LINK" | grep 'SSID:' | awk '{print $2}')
-        echo "Connected to $CONNECTED_SSID"
-        logger -t "$LOG_TAG" "Connected to $CONNECTED_SSID"
-    else
-        echo "Connection attempt sent. Check status in a few seconds."
+    if do_wait_connected "$IFACE" 25; then
+        logger -t "$LOG_TAG" "Connected to $TARGET_SSID"
+        return 0
     fi
+    logger -t "$LOG_TAG" "Failed to connect to $TARGET_SSID"
+    return 1
+}
+
+# Update the key for the currently-targeted SSID and reconnect.
+# Used when the user fixes a wrong password via the dashboard.
+do_update_key() {
+    TARGET_SSID="$1"
+    NEW_KEY="$2"
+    [ -z "$TARGET_SSID" ] && { echo "Usage: $0 update-key <SSID> <KEY>"; return 1; }
+
+    UCI_SECTION=$(uci show wireless 2>/dev/null | grep "device='$RADIO'" | grep default_ | head -1 | cut -d. -f2 | cut -d. -f1)
+    [ -z "$UCI_SECTION" ] && UCI_SECTION="default_${RADIO}"
+
+    CUR_SSID=$(uci -q get "wireless.$UCI_SECTION.ssid")
+    if [ "$CUR_SSID" != "$TARGET_SSID" ]; then
+        echo "Not the active SSID (active='$CUR_SSID', requested='$TARGET_SSID') — config saved, no reconnect."
+        return 0
+    fi
+
+    IFACE=$(get_wan_iface)
+    [ -z "$IFACE" ] && { echo "ERROR: Cannot detect interface"; return 1; }
+
+    if [ "$NEW_KEY" = "open" ]; then
+        uci set "wireless.$UCI_SECTION.encryption=none"
+        uci delete "wireless.$UCI_SECTION.key" 2>/dev/null
+    else
+        uci set "wireless.$UCI_SECTION.encryption=psk2"
+        uci set "wireless.$UCI_SECTION.key=$NEW_KEY"
+    fi
+    do_force_disconnect "$IFACE"
+    uci commit wireless
+    wifi reload "$RADIO"
+    sleep 2
+
+    if do_wait_connected "$IFACE" 25; then
+        logger -t "$LOG_TAG" "Reconnected to $TARGET_SSID with updated key"
+        return 0
+    fi
+    logger -t "$LOG_TAG" "Failed to reconnect to $TARGET_SSID after key update"
+    return 1
 }
 
 # Disconnect
@@ -246,14 +351,16 @@ case "$1" in
     status)     do_status ;;
     scan)       do_scan ;;
     connect)    do_connect "$2" ;;
+    update-key) do_update_key "$2" "$3" ;;
     disconnect) do_disconnect ;;
     daemon)     do_daemon ;;
     *)
-        echo "Usage: $0 {status|scan|connect <SSID>|disconnect|daemon}"
+        echo "Usage: $0 {status|scan|connect <SSID>|update-key <SSID> <KEY>|disconnect|daemon}"
         echo ""
         echo "  status      Show current connection and known networks"
         echo "  scan        Scan for available WiFi networks"
         echo "  connect     Connect to a known SSID"
+        echo "  update-key  Update key for the active SSID and reconnect"
         echo "  disconnect  Disconnect from current network"
         echo "  daemon      Run as background daemon (auto-connect + roaming)"
         ;;

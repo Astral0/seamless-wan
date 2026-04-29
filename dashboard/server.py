@@ -34,7 +34,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Override to use simpler logging."""
-        sys.stderr.write(f"[dashboard] {args[0]} {args[1]} {args[2]}\n")
+        sys.stderr.write(f"[dashboard] {format % args}\n")
 
     # --- Response helpers ---
 
@@ -334,6 +334,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(api_success({"message": result.stdout}))
             else:
                 self.send_json(api_error(result.stderr or "Connect+Add failed"), 500)
+            return
+
+        # POST /api/usb/remap
+        if path == "/api/usb/remap":
+            result = host_commands.remap_usb_radios()
+            if result.ok:
+                self.send_json(api_success({"message": "USB dongles remapped", "output": result.stdout}))
+            else:
+                self.send_json(api_error(result.stderr or result.stdout or "Remap failed"), 500)
             return
 
         # POST /api/services/<name>/restart

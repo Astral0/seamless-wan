@@ -113,6 +113,16 @@
             </div>
         </div>
 
+        <!-- USB Dongles -->
+        <div class="card">
+            <h2>USB Dongles</h2>
+            <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
+                Re-detect WiFi dongles and rebind radios after moving them between USB ports.
+            </p>
+            <button class="btn btn-primary btn-sm" id="btn-remap-usb" onclick="doRemapUsb()">Remap USB Dongles</button>
+            <pre id="remap-output" style="display:none;margin-top:12px;padding:10px;background:#0b0e14;color:#d1d5db;font-size:12px;border-radius:6px;white-space:pre-wrap;max-height:240px;overflow:auto"></pre>
+        </div>
+
         <!-- WiFi Roaming -->
         <div class="card">
             <h2>WiFi Roaming (wan4 - MT7601U)</h2>

@@ -175,8 +175,23 @@ def get_system_status() -> SystemStatus:
 
 
 def _refresh_public_ip() -> str:
-    """Background fetch of the system's public IP (slow, hits external service)."""
-    r = run_ssh("curl -s --max-time 3 ifconfig.me 2>/dev/null", timeout=5)
+    """Background fetch of the system's public IP (slow, hits external service).
+
+    Falls back to direct-IP HTTP with a Host header when DNS isn't
+    configured: with no glorytun tunnel up, OMR's resolv.conf is empty
+    and a plain `curl ifconfig.me` fails on name resolution even though
+    the WAN itself reaches the internet.
+    """
+    r = run_ssh(
+        "ip=$(curl -fsS --max-time 3 ifconfig.me 2>/dev/null); "
+        "if [ -z \"$ip\" ]; then "
+        "  addr=$(nslookup ifconfig.me 8.8.8.8 2>/dev/null | "
+        "    sed -n 's/^Address: \\([0-9.]\\+\\)$/\\1/p' | head -1); "
+        "  [ -n \"$addr\" ] && ip=$(curl -fsS --max-time 3 -H 'Host: ifconfig.me' \"http://$addr/\" 2>/dev/null); "
+        "fi; "
+        "echo \"$ip\"",
+        timeout=10,
+    )
     return r.stdout.strip() if r.ok and r.stdout else ""
 
 
@@ -812,7 +827,8 @@ def connect_wifi(ssid: str) -> CommandResult:
         return CommandResult(stderr=err, returncode=1)
 
     with _write_lock:
-        return run_ssh(f"/opt/wifi-roaming.sh connect '{shell_escape(ssid)}'", timeout=20)
+        # connect: ~3s force-disconnect+reload + up to 25s wait_connected
+        return run_ssh(f"/opt/wifi-roaming.sh connect '{shell_escape(ssid)}'", timeout=40)
 
 
 def disconnect_wifi() -> CommandResult:
@@ -887,7 +903,7 @@ def add_known_network(ssid: str, key: str, priority: int, autoconnect: bool = Tr
 
 
 def update_known_network(ssid: str, key: str, priority: int, autoconnect: bool = True) -> CommandResult:
-    """Update a network in wifi-roaming.conf."""
+    """Update a network in wifi-roaming.conf and reapply key if SSID is active."""
     err = validate_ssid(ssid)
     if err:
         return CommandResult(stderr=err, returncode=1)
@@ -902,10 +918,22 @@ def update_known_network(ssid: str, key: str, priority: int, autoconnect: bool =
     flag = _auto_flag(autoconnect)
 
     with _write_lock:
-        return run_ssh(
+        # 1) Persist update in /etc/wifi-roaming.conf
+        conf_result = run_ssh(
             f"mount -o remount,rw / 2>/dev/null; "
             f"sed -i '/^{safe_ssid}|/c\\{safe_ssid}|{safe_key}|{priority}|{flag}' /etc/wifi-roaming.conf",
             timeout=10,
+        )
+        if not conf_result.ok:
+            return conf_result
+
+        # 2) If this SSID is the currently-targeted one, reapply the key in
+        # UCI and reconnect. Otherwise the live wireless config keeps the
+        # old (possibly wrong) password and the user's "save" looks like a
+        # no-op even though the conf is updated.
+        return run_ssh(
+            f"/opt/wifi-roaming.sh update-key '{safe_ssid}' '{safe_key}'",
+            timeout=40,
         )
 
 
@@ -931,21 +959,16 @@ def connect_and_add_network(ssid: str, key: str, priority: int, autoconnect: boo
     if not add_result.ok:
         return add_result
 
+    # connect_wifi now waits for an actual L3-up state (link + DHCP IP)
+    # and returns a non-zero exit code on failure, so we can trust it.
     connect_result = connect_wifi(ssid)
-
-    # Wait and verify connection
-    time.sleep(7)
-    r = run_ssh(
-        "/opt/wifi-roaming.sh status 2>/dev/null | grep -q 'Connected to'",
-        timeout=10,
-    )
-    if r.ok:
+    if connect_result.ok:
         return CommandResult(stdout=f"Connected to {ssid} and added to known networks")
 
     # Connection failed — rollback: delete from config
     delete_known_network(ssid)
-    stderr = connect_result.stderr or "Connection failed"
-    return CommandResult(stderr=f"Connection to {ssid} failed, removed from config. {stderr}", returncode=1)
+    detail = connect_result.stdout or connect_result.stderr or "Connection failed"
+    return CommandResult(stderr=f"Connection to {ssid} failed, removed from config. {detail}", returncode=1)
 
 
 # --- WAN & Service commands ---
@@ -966,6 +989,12 @@ def get_services_status() -> list[ServiceStatus]:
         r = run_ssh(f"service {name} status 2>/dev/null | grep -q running && echo yes", timeout=5)
         services.append(ServiceStatus(name=name, running=r.ok and "yes" in r.stdout))
     return services
+
+
+def remap_usb_radios() -> CommandResult:
+    """Re-detect USB WiFi dongles and remap UCI radio paths + WAN bindings."""
+    with _write_lock:
+        return run_ssh("/opt/remap-radios.sh", timeout=60)
 
 
 def restart_service(name: str) -> CommandResult:
